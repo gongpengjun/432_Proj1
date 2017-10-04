@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
     struct hostent *server;
     char *hostname;
     char buf[BUFSIZE];
+    char ENTER_CHAT[] = "enter";
 
     /* check command line arguments */
     if (argc != 3) {
@@ -53,20 +54,24 @@ int main(int argc, char **argv) {
     serveraddr.sin_port = htons(portno);
 
     /* get a message from the user */
-    bzero(buf, BUFSIZE);
-    printf("Please enter msg: ");
-    fgets(buf, BUFSIZE, stdin);
+    bzero(buf, BUFSIZE); 
+    //printf("Please enter msg: ");
+    //fgets(buf, BUFSIZE, stdin);
 
     /* send the message to the server */
     serverlen = sizeof(serveraddr);
-    n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
+    n = sendto(sockfd, ENTER_CHAT, 5, 0, &serveraddr, serverlen);
     if (n < 0) 
       error("ERROR in sendto");
     
-    /* print the server's reply */
+    /* print the server's reply 
     n = recvfrom(sockfd, buf, strlen(buf), 0, &serveraddr, &serverlen);
     if (n < 0) 
       error("ERROR in recvfrom");
-    printf("Echo from server: %s", buf);
+    printf("Message from server: %s", buf);
+    memset(buf, 0, BUFSIZE);
+    printf("Please enter msg: ");
+    fgets(buf, BUFSIZE, stdin);
+*/
     return 0;
 }
