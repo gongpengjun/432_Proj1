@@ -3,14 +3,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <netdb.h>
+#include <limits.h>
 #include <sys/types.h> 
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #define BUFSIZE 512
+#define MAXUINTLEN 20
 
 char ENTER_CHAT[] = "enter";
+
 struct sockaddr_in clientaddr;
 int clientlen;
 
@@ -19,11 +22,10 @@ void error(char *msg) {
 	exit(1);
 }
 
-void handle_connection(){
-	int sockfd, portno, optval;
-	struct sockaddr_in serveraddr;
+int bind_new_socket(struct sockaddr_in serveraddr, int p) {
+	int sockfd, optval, portno;
 
-	portno = 0;
+	portno = p;
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if(sockfd < 0){
 		error("ERROR: failed to open socket");
@@ -41,20 +43,49 @@ void handle_connection(){
 	if(bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) < 0)
 		error("ERROR: failed to bind socket and port");
 
-	puts("CHILD: Successfully bound to new socket");
+	return sockfd;
+}
+
+void handle_connection(){
+	char buf[BUFSIZE];
+	char portstr[MAXUINTLEN];
+	int sockfd, portno, optval, serverlen, n;
+	struct sockaddr_in serveraddr;
+
+	memset(buf, 0, BUFSIZE);
+	memset(portstr, 0, MAXUINTLEN);
+	portno = 0;
+
+	sockfd = bind_new_socket(serveraddr, portno);
+	serverlen = sizeof(serveraddr);
+	if(getsockname(sockfd, (struct sockaddr *)&serveraddr, &serverlen))
+		error("ERROR: getsockname failed");
+	portno = ntohs(serveraddr.sin_port);
+	snprintf(portstr, MAXUINTLEN, "%d", portno);
+
+	printf("CHILD: Bound to port #%d\nConverted to string: %s\n", portno, portstr);
+
+	n = sendto(sockfd, portstr, strlen(portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
+	if (n < 0) 
+		error("ERROR in sendto");	
+
+        n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
+	if(n < 0)
+		error("ERROR: recvfrom returned invalid message length");
+	printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
+
 	close(sockfd);
 	return;
 
 }
 
-void new_connection(int sockfd){
+void new_connection(){
 	char buf[BUFSIZE];
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
-	pid_t pid;
-
-	puts("CHILD: Handling new connection");
+	int newsockfd;
+	pid_t pid;	
 
 	hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
 	if (hostp == NULL)
@@ -64,17 +95,13 @@ void new_connection(int sockfd){
 	if (hostaddrp == NULL)
 		error("ERROR on inet_ntoa\n");
 
-	printf("server received chat request from %s (%s)\n", hostp->h_name, hostaddrp);
-	//printf("server received %d/%d bytes: %s\n", strlen(buf), n, buf);
+	printf("SERVER-LOG: Received chat request from %s (%s)\n", hostp->h_name, hostaddrp);
 
-	
-	
 	pid = fork();
 	if(pid < 0)
 		error("ERROR: fork failed");
 
 	if(pid == 0){
-		close(sockfd);
 		handle_connection();
 		exit(1);
 	}else{
@@ -85,7 +112,7 @@ void new_connection(int sockfd){
 
 int main(int argc, char** argv) {
 	char buf[BUFSIZE];
-	int sockfd, newsockfd, portno, optval, pid, n;
+	int sockfd, newsockfd, portno, optval, n;
 	struct sockaddr_in serveraddr;
 
 	if (argc != 2) {
@@ -98,26 +125,9 @@ int main(int argc, char** argv) {
 		error("ERROR: received invalid port number");
 	}
 
-	/*Create parent socket*/
+	sockfd = bind_new_socket(serveraddr, portno);
 
-	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if(sockfd < 0){
-		error("ERROR: failed to open socket");
-	}
-
-	optval = 1;
-	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval, sizeof(int));
-	memset((void *)&serveraddr, 0, sizeof(serveraddr));
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	serveraddr.sin_port = htons((unsigned short)portno);
-
-	/*Bind parent socket with port*/
-
-	if(bind(sockfd, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) < 0)
-		error("ERROR: failed to bind socket and port");
-
-	puts("SERVER: new listening on socket");
+	puts("SERVER-LOG: now listening on socket");
 	clientlen = sizeof(clientaddr);
 
 	while(1) {
@@ -127,38 +137,14 @@ int main(int argc, char** argv) {
 		if(n < 0)
                 	error("ERROR: recvfrom returned invalid message length");
 
-		printf("Received new message: %s\nMessage length: %d\n", buf, n);
-		printf("Strlen of ENTER_CHAT: %d\nStrlen of message: %d\n", strlen(ENTER_CHAT), strlen(buf));
+		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
+		//printf("SERVER-LOG: Strlen of ENTER_CHAT: %d\nStrlen of message: %d\n", strlen(ENTER_CHAT), strlen(buf));
 
 		if (memcmp(ENTER_CHAT, buf, 5) == 0){
-			new_connection(sockfd);
+			new_connection();
 		}
-		/*
-		hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
-		if (hostp == NULL)
-			error("ERROR on gethostbyaddr");
-
-		hostaddrp = inet_ntoa(clientaddr.sin_addr);
-		if (hostaddrp == NULL)
-			error("ERROR on inet_ntoa\n");
-
-		printf("server received datagram from %s (%s)\n", hostp->h_name, hostaddrp);
-		printf("server received %d/%d bytes: %s\n", strlen(buf), n, buf);
-
-		pid = fork();
-		if(pid < 0)
-			error("ERROR: fork failed");
-
-		if(pid == 0){
-			close(sockfd);
-			handle_connection(newsockfd);
-			exit(1);
-		}else{
-			close(newsockfd);
-		}
-		*/
-
 	}
+
 	return 0;
 }
 
