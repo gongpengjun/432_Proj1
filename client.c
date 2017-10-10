@@ -48,7 +48,7 @@ void resolve_host() {
 void init_server_connection() {
 	int n, serverlen;
 	char buf[BUFSIZE];
-	char ENTER_CHAT[] = "enter";
+	char ENTER_CHAT[] = "ENTER";
 
 	memset(buf, 0, BUFSIZE);
 
@@ -63,31 +63,30 @@ void init_server_connection() {
 	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
 	if (n < 0) 
 		error("ERROR in recvfrom");
-	printf("Server requested to use port# %s", buf);
+	printf("Server requested to use port# %s\n", buf);
 	portno = atoi(buf);
 	serveraddr.sin_port = htons(portno);
 
-	memset(buf, 0, BUFSIZE);
-	printf("Please enter msg: ");
-	fgets(buf, BUFSIZE, stdin);
+	while(1){
+		memset(buf, 0, BUFSIZE);
+		printf("Please enter msg: ");
+		fgets(buf, BUFSIZE, stdin);
 
-	n = sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&serveraddr, serverlen);
-	if(n<0)
-		error("ERROR: sendto failed");
+		n = sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&serveraddr, serverlen);
+		if(n < 0)
+			error("ERROR: sendto failed");
+
+		if(memcmp(buf, "EXIT", 4) == 0){
+			puts("Closing Connection");
+			break;
+		}
+	}
 
 	close(sockfd);
 	return;
 }
 
 int main(int argc, char **argv) {
-	/*
-	int sockfd, portno, n;
-	int serverlen;
-	struct sockaddr_in serveraddr;
-	struct hostent *server;
-	char *hostname;
-	char buf[BUFSIZE];
-	*/	
 
     	/* check command line arguments */
 	if (argc != 3) {
@@ -100,46 +99,5 @@ int main(int argc, char **argv) {
 
 	init_server_connection();
 
-	/*
-	memset((char *)&serveraddr, 0, sizeof(serveraddr));
-	memset(buf, 0, BUFSIZE);
- 
-	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sockfd < 0) 
-		error("ERROR opening socket");
-	
-	server = gethostbyname(hostname);
-	if (server == NULL) {
-		fprintf(stderr,"ERROR, no such host as %s\n", hostname);
-		exit(0);
-	}
-
-	serveraddr.sin_family = AF_INET;
-	bcopy((char *)server->h_addr, (char *)&serveraddr.sin_addr.s_addr, server->h_length);
-	serveraddr.sin_port = htons(portno);
-
-
-	serverlen = sizeof(serveraddr);
-	n = sendto(sockfd, ENTER_CHAT, 5, 0, (struct sockaddr *)&serveraddr, serverlen);
-	if (n < 0) 
-		error("ERROR in sendto");
-     
-	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-	if (n < 0) 
-		error("ERROR in recvfrom");
-	printf("Server requested to use port# %s", buf);
-	portno = atoi(buf);
-	serveraddr.sin_port = htons(portno);
-
-	memset(buf, 0, BUFSIZE);
-	printf("Please enter msg: ");
-	fgets(buf, BUFSIZE, stdin);
-
-	n = sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr *)&serveraddr, serverlen);
-	if(n<0)
-		error("ERROR: sendto failed");
-
-	close(sockfd);
-	*/
 	return 0;
 }

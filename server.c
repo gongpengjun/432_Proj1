@@ -12,7 +12,14 @@
 #define BUFSIZE 512
 #define MAXUINTLEN 20
 
-char ENTER_CHAT[] = "enter";
+char ENTER_CHAT[] = "ENTER";
+char EXIT_CHAT[] = "EXIT";
+
+struct chat_protocol{
+	unsigned int pkt_type;
+	unsigned int pkt_len;
+	unsigned int msg_len;
+};
 
 struct sockaddr_in clientaddr;
 int clientlen;
@@ -46,7 +53,7 @@ int bind_new_socket(struct sockaddr_in serveraddr, int p) {
 	return sockfd;
 }
 
-void handle_connection(){
+void establish_connection(){
 	char buf[BUFSIZE];
 	char portstr[MAXUINTLEN];
 	int sockfd, portno, optval, serverlen, n;
@@ -67,12 +74,19 @@ void handle_connection(){
 
 	n = sendto(sockfd, portstr, strlen(portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
 	if (n < 0) 
-		error("ERROR in sendto");	
+		error("ERROR in sendto");
 
-        n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
-	if(n < 0)
-		error("ERROR: recvfrom returned invalid message length");
-	printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
+	while(1){
+        	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
+		if(n < 0)
+			error("ERROR: recvfrom returned invalid message length");
+		if(memcmp(buf, "EXIT", 4) == 0){
+			printf("SERVER-LOG: Client requested to close connection\n");
+			break;
+		}
+		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
+		memset(buf, 0, BUFSIZE);
+	}
 
 	close(sockfd);
 	return;
@@ -80,7 +94,6 @@ void handle_connection(){
 }
 
 void new_connection(){
-	char buf[BUFSIZE];
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
@@ -102,7 +115,7 @@ void new_connection(){
 		error("ERROR: fork failed");
 
 	if(pid == 0){
-		handle_connection();
+		establish_connection();
 		exit(1);
 	}else{
 		return;
@@ -138,11 +151,11 @@ int main(int argc, char** argv) {
                 	error("ERROR: recvfrom returned invalid message length");
 
 		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
-		//printf("SERVER-LOG: Strlen of ENTER_CHAT: %d\nStrlen of message: %d\n", strlen(ENTER_CHAT), strlen(buf));
 
 		if (memcmp(ENTER_CHAT, buf, 5) == 0){
 			new_connection();
 		}
+		memset(&clientaddr, 0, clientlen);
 	}
 
 	return 0;
