@@ -4,7 +4,8 @@
 #include <string.h>
 #include <netdb.h>
 #include <limits.h>
-#include <sys/types.h> 
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -19,6 +20,13 @@ struct chat_protocol{
 	unsigned int pkt_type;
 	unsigned int pkt_len;
 	unsigned int msg_len;
+};
+
+struct channel{
+	char name[64];		//name of channel
+	int portno;		//port number assigned to channel
+	char portstr[MAXUINTLEN];
+	pid_t pid;		//id of proc assigned to channel
 };
 
 struct sockaddr_in clientaddr;
@@ -139,6 +147,49 @@ void establish_connection(){
 
 }
 
+void create_channel(char *name){
+	//char ch_name[64];
+	int portno, sockfd, serverlen, status;
+	pid_t pid;
+	struct sockaddr_in serveraddr;
+
+	struct channel *ch = (struct channel*)malloc(sizeof(struct channel));
+	if(!ch)
+		error("ERROR: malloc failed to allocate channel struct");
+
+	memset(ch->name, 0, 64);
+	strncpy(ch->name, name, 63);
+
+	portno = 0;
+	sockfd = bind_new_socket(serveraddr, portno);
+	serverlen = sizeof(serveraddr);
+
+	/*Resolve OS-assigned port number*/
+	if(getsockname(sockfd, (struct sockaddr *)&serveraddr, &serverlen))
+		error("ERROR: getsockname failed");
+	portno = ntohs(serveraddr.sin_port);
+	ch->portno = portno;
+	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
+	//printf("CHILD: Bound to port #%d\nConverted to string: %s\n", portno, ch->portstr);
+
+	pid = fork();
+	if(pid < 0)
+		error("ERROR: fork failed in create_channel()");
+	if(pid == 0){	
+		ch->pid = 0;
+		printf("CHILD: Channel %s info:\nPORTNO %d\nPORTSTR %s\nPID %d\n", ch->name, ch->portno, ch->portstr, ch->pid);
+		free(ch);
+		exit(1);
+	}else{
+		ch->pid = pid;
+		wait(&status);
+		printf("PARENT: Channel %s info:\nPORTNO %d\nPORTSTR %s\nPID %d\n", ch->name, ch->portno, ch->portstr, ch->pid);
+		free(ch);
+		return;
+	}
+
+}
+
 void new_connection(){
 	struct hostent *hostp;
 	char * hostaddrp;
@@ -189,6 +240,8 @@ int main(int argc, char** argv) {
 
 	puts("SERVER-LOG: now listening on socket");
 	clientlen = sizeof(clientaddr);
+	create_channel("Commons");
+	exit(0);
 
 	while(1) {
 		msg = accept_input(sockfd);
