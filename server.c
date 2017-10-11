@@ -23,14 +23,24 @@ struct chat_protocol{
 
 struct sockaddr_in clientaddr;
 int clientlen;
+fd_set read_fds, write_fds;
 
 void error(char *msg) {
 	perror(msg);
 	exit(1);
 }
 
+void clean_globals(){
+	/*
+	* Called by recently forked-child to ensure non-essential
+	* global vars copied from parent to child are cleared.
+	*/
+	FD_ZERO(&read_fds);	//redundent but just to be safe
+	return;
+}
+
 int bind_new_socket(struct sockaddr_in serveraddr, int p) {
-	int sockfd, optval, portno;
+	int sockfd, optval, portno, n;
 
 	portno = p;
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -53,39 +63,75 @@ int bind_new_socket(struct sockaddr_in serveraddr, int p) {
 	return sockfd;
 }
 
+char * accept_input(int sockfd){
+	/*
+	* Uses select() to implement non-blocking reads from socket.
+	* Returns pointer to heap-buffer containing client message
+	*/
+	char *msg;
+	int n;
+
+	msg = (char *)malloc(BUFSIZE+1);
+	if(!msg)
+		error("ERROR: failed to malloc space for client input");
+
+	memset(msg, 0, BUFSIZE+1);
+
+	FD_ZERO(&read_fds);
+	FD_SET(sockfd, &read_fds);
+
+	printf("SERVER-LOG: Server is accepting input");
+	n = select(sockfd+1, &read_fds, &write_fds, 0, 0);
+	if(n < 0)
+		error("ERROR: in select return value");
+
+	if(FD_ISSET(sockfd, &read_fds)){
+
+		n = recvfrom(sockfd, msg, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
+		if(n < 0)
+                	error("ERROR: recvfrom returned invalid message length");
+
+		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", msg, n);
+		FD_CLR(sockfd, &read_fds);
+	}else{
+		error("ERROR: FD_ISSET returned non-zero value");
+	}
+
+	return msg;
+}
+
 void establish_connection(){
-	char buf[BUFSIZE];
+	char *msg;
 	char portstr[MAXUINTLEN];
 	int sockfd, portno, optval, serverlen, n;
 	struct sockaddr_in serveraddr;
 
-	memset(buf, 0, BUFSIZE);
 	memset(portstr, 0, MAXUINTLEN);
 	portno = 0;
-
 	sockfd = bind_new_socket(serveraddr, portno);
 	serverlen = sizeof(serveraddr);
+
+	/*Resolve OS-assigned port number*/
 	if(getsockname(sockfd, (struct sockaddr *)&serveraddr, &serverlen))
 		error("ERROR: getsockname failed");
 	portno = ntohs(serveraddr.sin_port);
 	snprintf(portstr, MAXUINTLEN, "%d", portno);
-
 	printf("CHILD: Bound to port #%d\nConverted to string: %s\n", portno, portstr);
 
+	/*Send client new port number*/
 	n = sendto(sockfd, portstr, strlen(portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
 	if (n < 0) 
 		error("ERROR in sendto");
 
 	while(1){
-        	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
-		if(n < 0)
-			error("ERROR: recvfrom returned invalid message length");
-		if(memcmp(buf, "EXIT", 4) == 0){
+		msg = accept_input(sockfd);
+		if(memcmp(msg, "EXIT", 4) == 0){
+			free(msg);
 			printf("SERVER-LOG: Client requested to close connection\n");
 			break;
 		}
-		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
-		memset(buf, 0, BUFSIZE);
+		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", msg, n);
+		free(msg);	
 	}
 
 	close(sockfd);
@@ -115,6 +161,7 @@ void new_connection(){
 		error("ERROR: fork failed");
 
 	if(pid == 0){
+		clean_globals();
 		establish_connection();
 		exit(1);
 	}else{
@@ -124,7 +171,7 @@ void new_connection(){
 }
 
 int main(int argc, char** argv) {
-	char buf[BUFSIZE];
+	char *msg;
 	int sockfd, newsockfd, portno, optval, n;
 	struct sockaddr_in serveraddr;
 
@@ -144,17 +191,11 @@ int main(int argc, char** argv) {
 	clientlen = sizeof(clientaddr);
 
 	while(1) {
-		memset(buf, 0, BUFSIZE);	
+		msg = accept_input(sockfd);
+		if(!memcmp(ENTER_CHAT, msg, 5))
+			new_connection(sockfd);
 
-		n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
-		if(n < 0)
-                	error("ERROR: recvfrom returned invalid message length");
-
-		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", buf, n);
-
-		if (memcmp(ENTER_CHAT, buf, 5) == 0){
-			new_connection();
-		}
+		free(msg);
 		memset(&clientaddr, 0, clientlen);
 	}
 
