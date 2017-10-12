@@ -76,7 +76,7 @@ void init_server_connection() {
 		if(n < 0)
 			error("ERROR: sendto failed");
 
-		if(memcmp(buf, "EXIT", 4) == 0){
+		if(memcmp(buf, "EXIT", 4) == 0 || memcmp(buf, "KILL", 4) == 0){
 			puts("Closing Connection");
 			break;
 		}

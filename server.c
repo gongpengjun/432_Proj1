@@ -29,7 +29,13 @@ struct channel{
 	pid_t pid;		//id of proc assigned to channel
 };
 
-struct channel *this_channel, *channel_arr;
+struct channel_MGR{
+	unsigned int size;
+	struct channel **channels;	//commons channel is always array index 0
+};
+
+struct channel *this_channel;
+struct channel **channel_arr;
 struct sockaddr_in **connected_clients;
 struct sockaddr_in clientaddr;
 int clientlen;
@@ -120,17 +126,21 @@ void start_channel(int sfd, struct channel *ch){
 
 	while(1){
 		msg = accept_input(sockfd);
-		if(memcmp(msg, "EXIT", 4) == 0){
+		if(memcmp(msg, "KILL", 4) == 0){
 			free(msg);
-			printf("SERVER-LOG: Client requested to close connection\n");
+			printf("SERVER-LOG: Client requested to kill channel connection\n");
 			break;
+		}else if(memcmp(msg, "EXIT", 4) == 0){
+			free(msg);
+			printf("SERVER-LOG: Client is leaving channel\n");
+			continue;
 		}
 		printf("SERVER-LOG: Received new message: %s\n", msg);
 		free(msg);	
 	}
 
 	close(sockfd);
-	return;
+	exit(0);
 }
 
 struct channel *create_channel(char *name, int p){
@@ -171,7 +181,7 @@ struct channel *create_channel(char *name, int p){
 
 }
 
-void new_connection(int sfd){
+void new_connection(int sfd, struct channel* ch){
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
@@ -187,7 +197,7 @@ void new_connection(int sfd){
 
 	printf("SERVER-LOG: Received chat request from %s (%s)\n", hostp->h_name, hostaddrp);
 	
-	n = sendto(sockfd, channel_arr->portstr, strlen(channel_arr->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
+	n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
 	if (n < 0)
 		error("ERROR in sendto");
 
@@ -203,6 +213,7 @@ int main(int argc, char** argv) {
 	char *msg;
 	int sockfd, portno, optval, n;
 	struct sockaddr_in serveraddr;
+	struct channel_MGR *ch_mgr;
 
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -218,12 +229,20 @@ int main(int argc, char** argv) {
 	puts("SERVER-LOG: Server is now listening");
 
 	clientlen = sizeof(clientaddr);
-	channel_arr = create_channel("Commons", 0);
+
+	/*
+	*Initialize Channel Manager struct and create Commons channel
+	*/
+	ch_mgr = (struct channel_MGR*)malloc(sizeof(struct channel_MGR*));
+	ch_mgr->size = 0;
+	ch_mgr->channels = malloc(256 * (sizeof(struct channel*)));
+	ch_mgr->channels[0] = create_channel("Commons", 0);
+	ch_mgr->size++;
 
 	while(1) {
 		msg = accept_input(sockfd);
 		if(!memcmp(ENTER_CHAT, msg, 5))
-			new_connection(sockfd);
+			new_connection(sockfd, ch_mgr->channels[0]);
 
 		free(msg);
 		memset(&clientaddr, 0, clientlen);
