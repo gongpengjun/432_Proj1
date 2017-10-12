@@ -29,6 +29,8 @@ struct channel{
 	pid_t pid;		//id of proc assigned to channel
 };
 
+struct channel *this_channel, *channel_arr;
+struct sockaddr_in **connected_clients;
 struct sockaddr_in clientaddr;
 int clientlen;
 fd_set read_fds, write_fds;
@@ -108,28 +110,13 @@ char * accept_input(int sockfd){
 	return msg;
 }
 
-void establish_connection(){
+void start_channel(int sfd, struct channel *ch){
 	char *msg;
-	char portstr[MAXUINTLEN];
-	int sockfd, portno, optval, serverlen, n;
-	struct sockaddr_in serveraddr;
+	int sockfd = sfd;
 
-	memset(portstr, 0, MAXUINTLEN);
-	portno = 0;
-	sockfd = bind_new_socket(serveraddr, portno);
-	serverlen = sizeof(serveraddr);
-
-	/*Resolve OS-assigned port number*/
-	if(getsockname(sockfd, (struct sockaddr *)&serveraddr, &serverlen))
-		error("ERROR: getsockname failed");
-	portno = ntohs(serveraddr.sin_port);
-	snprintf(portstr, MAXUINTLEN, "%d", portno);
-	printf("CHILD: Bound to port #%d\nConverted to string: %s\n", portno, portstr);
-
-	/*Send client new port number*/
-	n = sendto(sockfd, portstr, strlen(portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
-	if (n < 0) 
-		error("ERROR in sendto");
+	this_channel = ch;
+	if(sockfd < 0)
+		error("ERROR: start_channel() received bad sockfd");
 
 	while(1){
 		msg = accept_input(sockfd);
@@ -138,20 +125,19 @@ void establish_connection(){
 			printf("SERVER-LOG: Client requested to close connection\n");
 			break;
 		}
-		printf("SERVER-LOG: Received new message: %s\nMessage length: %d\n", msg, n);
+		printf("SERVER-LOG: Received new message: %s\n", msg);
 		free(msg);	
 	}
 
 	close(sockfd);
 	return;
-
 }
 
-void create_channel(char *name){
-	//char ch_name[64];
-	int portno, sockfd, serverlen, status;
+struct channel *create_channel(char *name, int p){
+	int sockfd, serverlen;
 	pid_t pid;
 	struct sockaddr_in serveraddr;
+	int portno = p;
 
 	struct channel *ch = (struct channel*)malloc(sizeof(struct channel));
 	if(!ch)
@@ -160,7 +146,6 @@ void create_channel(char *name){
 	memset(ch->name, 0, 64);
 	strncpy(ch->name, name, 63);
 
-	portno = 0;
 	sockfd = bind_new_socket(serveraddr, portno);
 	serverlen = sizeof(serveraddr);
 
@@ -170,7 +155,6 @@ void create_channel(char *name){
 	portno = ntohs(serveraddr.sin_port);
 	ch->portno = portno;
 	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
-	//printf("CHILD: Bound to port #%d\nConverted to string: %s\n", portno, ch->portstr);
 
 	pid = fork();
 	if(pid < 0)
@@ -178,24 +162,20 @@ void create_channel(char *name){
 	if(pid == 0){	
 		ch->pid = 0;
 		printf("CHILD: Channel %s info:\nPORTNO %d\nPORTSTR %s\nPID %d\n", ch->name, ch->portno, ch->portstr, ch->pid);
-		free(ch);
-		exit(1);
+		start_channel(sockfd, ch);
 	}else{
 		ch->pid = pid;
-		wait(&status);
 		printf("PARENT: Channel %s info:\nPORTNO %d\nPORTSTR %s\nPID %d\n", ch->name, ch->portno, ch->portstr, ch->pid);
-		free(ch);
-		return;
+		return ch;
 	}
 
 }
 
-void new_connection(){
+void new_connection(int sfd){
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
-	int newsockfd;
-	pid_t pid;	
+	int sockfd = sfd;
 
 	hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
 	if (hostp == NULL)
@@ -206,24 +186,22 @@ void new_connection(){
 		error("ERROR on inet_ntoa\n");
 
 	printf("SERVER-LOG: Received chat request from %s (%s)\n", hostp->h_name, hostaddrp);
+	
+	n = sendto(sockfd, channel_arr->portstr, strlen(channel_arr->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
+	if (n < 0)
+		error("ERROR in sendto");
 
-	pid = fork();
-	if(pid < 0)
-		error("ERROR: fork failed");
+	/*
+	*Once sighandler is implemented, add check here
+	*Verify that client successfully connected to child
+	*/
 
-	if(pid == 0){
-		clean_globals();
-		establish_connection();
-		exit(1);
-	}else{
-		return;
-	}
-
+	return;
 }
 
 int main(int argc, char** argv) {
 	char *msg;
-	int sockfd, newsockfd, portno, optval, n;
+	int sockfd, portno, optval, n;
 	struct sockaddr_in serveraddr;
 
 	if (argc != 2) {
@@ -237,11 +215,10 @@ int main(int argc, char** argv) {
 	}
 
 	sockfd = bind_new_socket(serveraddr, portno);
+	puts("SERVER-LOG: Server is now listening");
 
-	puts("SERVER-LOG: now listening on socket");
 	clientlen = sizeof(clientaddr);
-	create_channel("Commons");
-	exit(0);
+	channel_arr = create_channel("Commons", 0);
 
 	while(1) {
 		msg = accept_input(sockfd);
