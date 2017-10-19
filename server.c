@@ -401,7 +401,7 @@ int main(int argc, char** argv) {
 	ch_mgr = (struct channel_MGR*)malloc(sizeof(struct channel_MGR*));
 	ch_mgr->size = 0;
 	ch_mgr->channels = malloc(256 * (sizeof(struct channel*)));
-	ch_mgr->channels[0] = create_channel("Commons", 0);
+	ch_mgr->channels[0] = create_channel("Commons", 4446);
 	ch_mgr->size++;
 
 	while(1) {
