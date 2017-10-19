@@ -259,7 +259,6 @@ void start_channel(int sfd, struct channel *ch){
 	char *msg, userhost_addr;
 	int sockfd = sfd;
 	int i, n;
-	//struct user *new_user;
 
 	this_channel = ch;
 	this_channel->num_users = 0;
@@ -280,29 +279,6 @@ void start_channel(int sfd, struct channel *ch){
 			free(msg);
 			server_log("Client requested to join channel");
 			client_login(&clientaddr);
-			/*Allocate user struct for new client*/
-			/*
-			this_channel->users[this_channel->num_users] = malloc(sizeof(struct user));
-			if(!this_channel->users[this_channel->num_users])
-				error("ERROR: start_channel() failed to malloc space for new user");
-
-			new_user = this_channel->users[this_channel->num_users];
-			this_channel->num_users++;
-
-			//Allocate sockaddr_in clientaddr struct for new client
-			new_user->clientaddr = malloc(sizeof(struct sockaddr_in));
-			if(!new_user->clientaddr)
-				error("ERROR: start_channel() failed to malloc space for new user clientaddr");
-
-			memset(new_user->clientaddr, 0, sizeof(struct sockaddr_in));
-			memcpy(new_user->clientaddr, &clientaddr, sizeof(struct sockaddr_in));
-
-			new_user->hostaddrp = resolve_client();
-			if(new_user->hostaddrp == NULL)
-				debug("resolve_client returned null hostaddrp");
-
-			server_log("client added to channel");
-			*/
 			continue;
 		}
 		else if(memcmp(msg, "KILL", 4) == 0){
