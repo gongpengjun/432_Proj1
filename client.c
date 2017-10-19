@@ -48,9 +48,11 @@ void resolve_host() {
 void init_server_connection() {
 	int n, serverlen;
 	char buf[BUFSIZE];
+	char in_buf[BUFSIZE];
 	char ENTER_CHAT[] = "ENTER";
 
 	memset(buf, 0, BUFSIZE);
+	memset(in_buf, 0, BUFSIZE);
 
 	resolve_host();
 
@@ -69,6 +71,7 @@ void init_server_connection() {
 
 	while(1){
 		memset(buf, 0, BUFSIZE);
+		memset(in_buf, 0, BUFSIZE);
 		printf("Please enter msg: ");
 		fgets(buf, BUFSIZE, stdin);
 
@@ -79,6 +82,9 @@ void init_server_connection() {
 		if(memcmp(buf, "EXIT", 4) == 0 || memcmp(buf, "KILL", 4) == 0){
 			puts("Closing Connection");
 			break;
+		}else if(memcmp(buf, "hello", 5) == 0){ /*For testing, remove when done*/
+			n = recvfrom(sockfd, in_buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
+			printf("Received msg:\t%s\n", in_buf);
 		}
 	}
 

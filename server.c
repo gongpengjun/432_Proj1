@@ -226,7 +226,7 @@ char * accept_input_blk(int sockfd){
 void start_channel(int sfd, struct channel *ch){
 	char *msg, userhost_addr;
 	int sockfd = sfd;
-	int i;
+	int i, n;
 	struct user *new_user;
 
 	
@@ -281,11 +281,20 @@ void start_channel(int sfd, struct channel *ch){
 		}
 		else if(memcmp(msg, "EXIT", 4) == 0){
 			free(msg);
-			printf("SERVER-LOG: Client is leaving channel\n");
+			printf("[*] SERVER-LOG (%d):\tClient is leaving channel\n", pid);
 			continue;
+		}else{
+
+			i=0;
+			while(this_channel->users[i]){
+				printf("[*] SERVER-LOG (%d):\tsending message to (%s)\n", pid, this_channel->users[i]->hostaddrp);
+				n = sendto(sockfd, msg, BUFSIZE, 0, (struct sockaddr *)this_channel->users[i]->clientaddr, sizeof(struct sockaddr_in));
+				if(n < 0)
+					debug("failed to send message to client");
+				i++;
+			}
+			free(msg);
 		}
-		printf("SERVER-LOG: Received new message: %s\n", msg);
-		free(msg);	
 	}
 
 	i=0;
@@ -359,7 +368,7 @@ void new_connection(int sfd, struct channel* ch){
 	if (hostaddrp == NULL)
 		error("ERROR on inet_ntoa\n");
 
-	printf("SERVER-LOG: Received chat request from %s (%s)\n", hostp->h_name, hostaddrp);
+	printf("[*] SERVER-LOG:  \treceived chat request from %s (%s)\n", hostp->h_name, hostaddrp);
 	
 	n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
 	if (n < 0)
@@ -375,13 +384,20 @@ void new_connection(int sfd, struct channel* ch){
 
 int main(int argc, char** argv) {
 	char *msg;
-	int sockfd, portno, optval, n;
+	int sockfd, portno, debug_portno, optval, n;
 	struct sockaddr_in serveraddr;
 	struct channel_MGR *ch_mgr;
 
-	if (argc != 2) {
+	if (argc < 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		exit(1);
+	}
+	if (argc == 3){
+		debug_portno = atoi(argv[2]);
+		if(debug_portno < 1)
+			error("ERROR: received invalid debug port number");
+	}else{
+		debug_portno = 0;
 	}
 
 	portno = atoi(argv[1]);
@@ -401,7 +417,7 @@ int main(int argc, char** argv) {
 	ch_mgr = (struct channel_MGR*)malloc(sizeof(struct channel_MGR*));
 	ch_mgr->size = 0;
 	ch_mgr->channels = malloc(256 * (sizeof(struct channel*)));
-	ch_mgr->channels[0] = create_channel("Commons", 4446);
+	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
 
 	while(1) {
