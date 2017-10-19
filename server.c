@@ -62,11 +62,13 @@ void error(char *msg){
 
 void debug(char *msg){
 	printf("[*] DEBUG (%d):\t\t%s\n", pid, msg);
+	memset(logging_msg, 0, 128);
 	return;
 }
 
 void server_log(char *msg){
 	printf("[*] SERVER-LOG (%d):\t%s\n", pid, msg);
+	memset(logging_msg, 0, 128);
 	return;
 }
 
@@ -203,16 +205,15 @@ char * accept_input_blk(int sockfd){
 	n = recvfrom(sockfd, msg, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
 	if(n < 0)
 		error("ERROR: recvfrom returned invalid message length");
-
-	//sprintf(logging_msg, "received new message: %s\nMessage length: %d", msg, n); /*Causes segfault, not sure why.*/
-	//server_log(logging_msg);
-	printf("[*] SERVER-LOG (%d):\treceived new message: %s\n", pid, msg);
+	
+	snprintf(logging_msg, 128, "received new message: %s", msg);
+	server_log(logging_msg);
 
 	/*Resolve ip addr of client and check if ip exists in connected users*/
 	char *hostaddrp = resolve_client();
-	//sprintf("resolved client address: %s", hostaddrp);
-	//server_log(logging_msg);
-	printf("[*] SERVER-LOG (%d):\tresolved client address: %s\n", pid, hostaddrp);
+	snprintf(logging_msg, 128, "resolved client address: %s", hostaddrp);
+	server_log(logging_msg);
+
 	if(user_lookup(hostaddrp) < 0){
 		if(memcmp(msg, "CONNECT", 7) == 0)
 			return msg;
@@ -223,13 +224,43 @@ char * accept_input_blk(int sockfd){
 	return msg;
 }
 
+void client_login(struct sockaddr_in *addr){
+	/*
+	* Create and fill new user struct and add it to the channel users list 
+	*/
+	struct user *new_user;
+
+	/*Allocate user struct for new client*/
+	this_channel->users[this_channel->num_users] = malloc(sizeof(struct user));
+	if(!this_channel->users[this_channel->num_users])
+		error("ERROR: start_channel() failed to malloc space for new user");
+
+	new_user = this_channel->users[this_channel->num_users];
+	this_channel->num_users++;
+
+	/*Allocate sockaddr_in clientaddr struct for new client*/
+	new_user->clientaddr = malloc(sizeof(struct sockaddr_in));
+	if(!new_user->clientaddr)
+		error("ERROR: start_channel() failed to malloc space for new user clientaddr");
+
+	memset(new_user->clientaddr, 0, sizeof(struct sockaddr_in));
+	memcpy(new_user->clientaddr, addr, sizeof(struct sockaddr_in));
+
+	new_user->hostaddrp = resolve_client();
+	if(new_user->hostaddrp == NULL)
+		debug("resolve_client returned null hostaddrp");
+
+	server_log("client added to channel");	
+
+	return;
+}
+
 void start_channel(int sfd, struct channel *ch){
 	char *msg, userhost_addr;
 	int sockfd = sfd;
 	int i, n;
-	struct user *new_user;
+	//struct user *new_user;
 
-	
 	this_channel = ch;
 	this_channel->num_users = 0;
 	this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
@@ -239,8 +270,7 @@ void start_channel(int sfd, struct channel *ch){
 	for(i=0; i<MAXCLIENTNUM; i++){
 		this_channel->users[i] = NULL;	
 	}
-
-	printf("num_users: %d\n", this_channel->num_users);
+	
 	if(sockfd < 0)
 		error("ERROR: start_channel() received bad sockfd");
 
@@ -249,8 +279,9 @@ void start_channel(int sfd, struct channel *ch){
 		if(memcmp(msg, "CONNECT", 7) == 0){
 			free(msg);
 			server_log("Client requested to join channel");
-
+			client_login(&clientaddr);
 			/*Allocate user struct for new client*/
+			/*
 			this_channel->users[this_channel->num_users] = malloc(sizeof(struct user));
 			if(!this_channel->users[this_channel->num_users])
 				error("ERROR: start_channel() failed to malloc space for new user");
@@ -258,7 +289,7 @@ void start_channel(int sfd, struct channel *ch){
 			new_user = this_channel->users[this_channel->num_users];
 			this_channel->num_users++;
 
-			/*Allocate sockaddr_in clientaddr struct for new client*/
+			//Allocate sockaddr_in clientaddr struct for new client
 			new_user->clientaddr = malloc(sizeof(struct sockaddr_in));
 			if(!new_user->clientaddr)
 				error("ERROR: start_channel() failed to malloc space for new user clientaddr");
@@ -270,24 +301,25 @@ void start_channel(int sfd, struct channel *ch){
 			if(new_user->hostaddrp == NULL)
 				debug("resolve_client returned null hostaddrp");
 
-			server_log("Client added to channel");
-			//this_channel->num_users--;
+			server_log("client added to channel");
+			*/
 			continue;
 		}
 		else if(memcmp(msg, "KILL", 4) == 0){
 			free(msg);
-			server_log("Client requested to kill channel connection");
+			server_log("client requested to kill channel connection");
 			break;
 		}
 		else if(memcmp(msg, "EXIT", 4) == 0){
 			free(msg);
-			printf("[*] SERVER-LOG (%d):\tClient is leaving channel\n", pid);
+			server_log("client is leaving channel");
 			continue;
 		}else{
 
 			i=0;
 			while(this_channel->users[i]){
-				printf("[*] SERVER-LOG (%d):\tsending message to (%s)\n", pid, this_channel->users[i]->hostaddrp);
+				snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
+				server_log(logging_msg);
 				n = sendto(sockfd, msg, BUFSIZE, 0, (struct sockaddr *)this_channel->users[i]->clientaddr, sizeof(struct sockaddr_in));
 				if(n < 0)
 					debug("failed to send message to client");
@@ -317,8 +349,12 @@ void start_channel(int sfd, struct channel *ch){
 }
 
 struct channel *create_channel(char *name, int p){
+	/*
+	* Bind to new socket and fork process.
+	* The child process will then be incharge of the new socket,
+	* where all traffic on channel "name" will be handled
+	*/
 	int sockfd, serverlen;
-	//pid_t pid;
 	struct sockaddr_in serveraddr;
 	int portno = p;
 
