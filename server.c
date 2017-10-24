@@ -14,6 +14,16 @@
 #define MAXUINTLEN 20
 #define MAXCLIENTNUM 100
 
+const uint32_t _IN_LOGIN = 0;
+const uint32_t _IN_LOGOUT = 1;
+const uint32_t _IN_JOIN = 2;
+const uint32_t _IN_LEAVE = 3;
+const uint32_t _IN_SAY = 4;
+const uint32_t _IN_LIST = 5;
+const uint32_t _IN_WHO = 6;
+const uint32_t _IN_LIVE = 7;
+const uint32_t _IN_ERROR = 99;
+
 char ENTER_CHAT[] = "ENTER";
 char EXIT_CHAT[] = "EXIT";
 
@@ -49,6 +59,7 @@ struct channel *this_channel;
 struct channel **channel_arr;
 struct sockaddr_in **connected_clients;
 struct sockaddr_in clientaddr;
+char *hostaddrp;
 int clientlen;
 fd_set read_fds, write_fds;
 
@@ -206,20 +217,20 @@ char * accept_input_blk(int sockfd){
 	if(n < 0)
 		error("ERROR: recvfrom returned invalid message length");
 	
-	snprintf(logging_msg, 128, "received new message: %s", msg);
-	server_log(logging_msg);
+	//snprintf(logging_msg, 128, "received new message: %s", msg);
+	//server_log(logging_msg);
 
 	/*Resolve ip addr of client and check if ip exists in connected users*/
-	char *hostaddrp = resolve_client();
+	hostaddrp = resolve_client();
 	snprintf(logging_msg, 128, "resolved client address: %s", hostaddrp);
 	server_log(logging_msg);
 
-	if(user_lookup(hostaddrp) < 0){
-		if(memcmp(msg, "CONNECT", 7) == 0)
-			return msg;
-		server_log("user not found");
+	//if(user_lookup(hostaddrp) < 0){
+	//	if(memcmp(msg, "CONNECT", 7) == 0)
+	//		return msg;
+	//	server_log("user not found");
 		//Send error message to client saying login required
-	}
+	//}
 
 	return msg;
 }
@@ -255,8 +266,73 @@ void client_login(struct sockaddr_in *addr){
 	return;
 }
 
+uint32_t parse_packet(char * _pkt){
+	char msg[BUFSIZE-4];
+	uint32_t type_id = 0;
+	
+	memset(msg, 0, BUFSIZE);
+	memcpy(&type_id, _pkt, 4);
+	//strip packet header
+	memcpy(msg, &_pkt[4], BUFSIZE-4);
+	memset(_pkt, 0, BUFSIZE);
+	memcpy(_pkt, msg, BUFSIZE-4);
+
+	printf("type_id: %d (0x%08x)\n", type_id, type_id);
+	if(type_id == _IN_LOGIN){
+		server_log("Type: Login");
+		server_log("Client requested to join channel");
+		if(user_lookup(hostaddrp) < 0){
+                	client_login(&clientaddr);
+		}else{
+			debug("Login request received from already authenticated user");
+		}
+		return _IN_LOGIN;
+		//break;
+
+	}else if(type_id == _IN_LOGOUT){
+                puts("Type: Logout");
+		server_log("Client is logging out");
+		return _IN_LOGOUT;
+		//Clean user struct
+		//break;
+
+	}else if(type_id == _IN_JOIN){
+                puts("Type: Join");
+		return _IN_JOIN;
+		//break;
+
+	}else if(type_id == _IN_LEAVE){
+                puts("Type: Leave");
+		server_log("client requested to kill channel connection");
+		return _IN_LEAVE;
+
+	}else if(type_id == _IN_SAY){
+                puts("Type: Say");
+		server_log("Client requested to post a message on the channel");
+		return _IN_SAY;
+
+	}else if(type_id == _IN_LIST){
+                puts("Type: List");
+		return _IN_LIST;
+
+	}else if(type_id == _IN_WHO){
+                puts("Type: Who");
+		return _IN_WHO;
+
+	}else if(type_id == _IN_LIVE){
+                puts("Type: Keep Alive");
+		return _IN_LIVE;
+
+	}else{
+		debug("ERROR: server received bad message type");
+	}
+
+	return _IN_ERROR;
+}
+
 void start_channel(int sfd, struct channel *ch){
 	char *msg, userhost_addr;
+	uint32_t msg_type;
 	int sockfd = sfd;
 	int i, n;
 
@@ -275,6 +351,15 @@ void start_channel(int sfd, struct channel *ch){
 
 	while(1){
 		msg = accept_input_blk(sockfd);
+		msg_type = parse_packet(msg);
+		if(msg_type == _IN_LOGOUT){
+			free(msg);
+			break;
+		}else if(msg_type == _IN_LEAVE){
+			free(msg);
+			break;
+
+		/*
 		if(memcmp(msg, "CONNECT", 7) == 0){
 			free(msg);
 			server_log("Client requested to join channel");
@@ -290,7 +375,8 @@ void start_channel(int sfd, struct channel *ch){
 			free(msg);
 			server_log("client is leaving channel");
 			continue;
-		}else{
+		*/
+		}else if(msg_type == _IN_SAY){
 
 			i=0;
 			while(this_channel->users[i]){
@@ -302,6 +388,9 @@ void start_channel(int sfd, struct channel *ch){
 				i++;
 			}
 			free(msg);
+		}else{
+			free(msg);
+			continue;
 		}
 	}
 
@@ -396,6 +485,7 @@ void new_connection(int sfd, struct channel* ch){
 
 int main(int argc, char** argv) {
 	char *msg;
+	uint32_t msg_type;
 	int sockfd, portno, debug_portno, optval, n;
 	struct sockaddr_in serveraddr;
 	struct channel_MGR *ch_mgr;
@@ -416,6 +506,18 @@ int main(int argc, char** argv) {
 	if(portno < 1) {
 		error("ERROR: received invalid port number");
 	}
+
+	/*
+	char * test = malloc(BUFSIZE);
+	memset(test, 0, BUFSIZE);
+	uint32_t i = 2;
+	//test[0] = 0x02;
+	memcpy(test, &i, 4);
+	//memset(test, 0x41, 32);
+	parse_packet(test);
+	free(test);
+	exit(0);
+	*/
 
 	sockfd = bind_new_socket(serveraddr, portno);
 	puts("SERVER-LOG: Server is now listening");
@@ -445,8 +547,12 @@ int main(int argc, char** argv) {
 		if(n < 0)
 			error("ERROR: recvfrom returned invalid message length");
 
-		if(!memcmp(ENTER_CHAT, msg, 5))
+		memcpy(&msg_type, msg, 4);
+		if(msg_type == _IN_LOGIN)
 			new_connection(sockfd, ch_mgr->channels[0]);
+
+		//if(!memcmp(ENTER_CHAT, msg, 5))
+		//	new_connection(sockfd, ch_mgr->channels[0]);
 
 		free(msg);
 		memset(&clientaddr, 0, clientlen);
