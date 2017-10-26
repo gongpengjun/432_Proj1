@@ -8,6 +8,8 @@
 #include <netdb.h> 
 
 #define BUFSIZE 512
+#define NAMELEN 32
+#define TEXTLEN 64
 
 const uint32_t _IN_LOGIN = 0;
 const uint32_t _IN_LOGOUT = 1;
@@ -26,12 +28,24 @@ const char _CMD_LIST[]="list";
 const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
+struct session_info{
+	char *name;
+};
+
+struct request_template{
+	uint32_t type_id;
+	char channel_name[NAMELEN];
+	char user_name[NAMELEN];
+	char text_field[TEXTLEN];
+};
+
 char DEFAULT_HOST[] = "127.0.0.1";
 int DEFAULT_PORT = 4444;
 
 int sockfd, portno;
 struct sockaddr_in serveraddr;
 struct hostent *server;
+struct session_info *session;
 char *hostname;
 
 void error(char *msg) {
@@ -62,7 +76,7 @@ void resolve_host() {
 	return;
 }
 
-void build_request(int argc, char **argv){
+void build_cmd_request(int argc, char **argv){
 	int i;
 
 	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
@@ -74,7 +88,7 @@ void build_request(int argc, char **argv){
         	}
 
 	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
-		//build_request(argc, argv);
+		
 
 	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
 		//build_request(argc, argv);
@@ -92,6 +106,28 @@ void build_request(int argc, char **argv){
 	return;
 }
 
+void build_noncmd_request(uint32_t t){
+	uint32_t type = t;
+	char * request;
+
+	request = malloc(sizeof(struct request_template));
+	if(!request)
+		error("ERROR: build_noncmd_request() failed to allocate request struct");
+	memset(request, 0, sizeof(struct request_template));
+
+	if(type == _IN_LOGIN){
+		if(session->name){
+			
+		}
+	}else if(type == _IN_LOGOUT){
+
+	}else if(type == _IN_LIVE){
+
+	}else{
+		error("ERROR: build_noncmd_request() received bad request type");
+	}
+}
+
 void resolve_cmd(char * input){
 	char cmd[BUFSIZE+1];
 	char **argv;
@@ -100,11 +136,13 @@ void resolve_cmd(char * input){
 
 	memset(cmd, 0, BUFSIZE+1);
 
+	n=0;
 	for(i=1; i<BUFSIZE; i++){
 		//uses i-1 to dispense of '/' char
 		if(input[i] < 0x21 || input[i] > 0x7e){ 
 			cmd[i-1] = 0x0;
 		}else{
+			n++;
 			cmd[i-1] = input[i];
 		}
 	}
@@ -119,6 +157,11 @@ void resolve_cmd(char * input){
 		}
 		i+=n+1;
 		argc++;
+		//If the 1st string (i.e. 'switch') is longer than 7, we assume an invalid command
+		if(argc < 2 && n > 7){
+			printf("Invalid command\n");
+			return;
+		}
 	}
 	printf("DEBUG: argc = %d\n", argc);
 
@@ -143,12 +186,22 @@ void resolve_cmd(char * input){
 			error("ERROR: offset ran out of buffer bounds");	
 	}
 
-	build_request(argc, argv);
+	build_cmd_request(argc, argv);
 
 	for(i=0; i<argc; i++){
 		free(argv[i]);
 	}
 	free(argv);
+
+	return;
+}
+
+void send_request(char * out_buf){
+	int n;
+
+	n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
+	if(n < 0)
+		error("ERROR: sendto failed");
 
 	return;
 }
@@ -256,16 +309,38 @@ void init_server_connection() {
 int main(int argc, char **argv) {
 
     	/* check command line arguments */
-	if (argc != 3) {
-		hostname = DEFAULT_HOST;
-		portno = DEFAULT_PORT;
-	}else{
-		hostname = argv[1];
-		portno = atoi(argv[2]);
+	if (argc != 4) {
+		puts("Usage: ./client <hostname> <port> <username>");
+		exit(1);
 	}
+
+	session = malloc(sizeof(struct session_info));
+	if(!session)
+		error("ERROR: main() failed to allocate session struct");
+	memset(session, 0, sizeof(struct session_info));
+
+	hostname = argv[1];
+	if(!hostname){
+		puts("ERROR: received invalid hostname");
+		exit(1);
+	}
+
+	portno = atoi(argv[2]);
+	if(!portno){
+		puts("ERROR: received invalid port number");
+		exit(1);
+	}
+
+	session->name = malloc(NAMELEN+4);
+	if(!session->name)
+		error("ERROR: main() failed to allocate space for user's name");
+	memset(session->name, 0, NAMELEN+4);
+	strncpy(session->name, argv[3], NAMELEN);
 
 	//init_server_connection();
 	user_prompt();
 
+	free(session->name);
+	free(session);
 	return 0;
 }
