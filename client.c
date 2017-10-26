@@ -28,31 +28,47 @@ const char _CMD_LIST[]="list";
 const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
-typedef struct _LOGIN_REQUEST{
+struct __attribute__((__packed__)) _REQ_LOGIN{
 	uint32_t type_id;
 	char user_name[NAMELEN+4];
-}_LOGIN_REQ;
+}_LOGIN;
 
-typedef struct _SAY_REQUEST{
+struct __attribute__((__packed__)) _REQ_LOGOUT{
+	uint32_t type_id;
+}_LOGOUT;
+
+struct __attribute__((__packed__)) _REQ_JOIN{
+	uint32_t type_id;
+	char channel_name[NAMELEN+4];
+}_JOIN;
+
+struct __attribute__((__packed__)) _REQ_LEAVE{
+	uint32_t type_id;
+	char channel_name[NAMELEN+4];
+}_LEAVE;
+
+struct __attribute__((__packed__)) _REQ_SAY{
 	uint32_t type_id;
 	char channel_name[NAMELEN+4];
 	char text_field[TEXTLEN+4];
-}_SAY_REQ;
+}_SAY;
 
-union _REQUEST{
-	_LOGIN_REQ login;
-	_SAY_REQ say;
-};
+struct __attribute__((__packed__)) _REQ_LIST{
+	uint32_t type_id;
+}_LIST;
+
+struct __attribute__((__packed__)) _REQ_WHO{
+	uint32_t type_id;
+	char channel_name[NAMELEN+4];
+}_WHO;
+
+struct __attribute__((__packed__)) _REQ_LIVE{
+	uint32_t type_id;
+}_LIVE;
 
 struct session_info{
 	char *name;
-};
-
-struct request_template{
-	uint32_t type_id;
-	char channel_name[NAMELEN];
-	char user_name[NAMELEN];
-	char text_field[TEXTLEN];
+	char active_channel[NAMELEN+4];
 };
 
 char DEFAULT_HOST[] = "127.0.0.1";
@@ -92,52 +108,87 @@ void resolve_host() {
 	return;
 }
 
-int build_request(uint32_t t, int argc, char **argv){
+uint32_t build_request(uint32_t t, int argc, char **argv){
 	uint32_t type = t;
 	size_t n;
-	union _REQUEST request;
 
 	if(type == _IN_LOGIN){
 		if(session->name){
-			memset(&request.login, 0, sizeof(struct _LOGIN_REQUEST));
-			request.login.type_id = type;
-			memcpy(request.login.user_name, session->name, NAMELEN);
-			printf("Login request:\nType: %d\nName: %s\n", request.login.type_id, request.login.user_name);
-			return 0;
+			memset(&_LOGIN, 0, sizeof(struct _REQ_LOGIN));
+			_LOGIN.type_id = type;
+			memcpy(_LOGIN.user_name, session->name, NAMELEN);
+			printf("Login request:\nType: %d\nName: %s\n", _LOGIN.type_id, _LOGIN.user_name);
+			return _LOGIN.type_id;
 		}
 	}else if(type == _IN_LOGOUT){
+		_LOGOUT.type_id = type;
+		return _LOGOUT.type_id;
 
 	}else if(type == _IN_JOIN){
-
+		//argv[0] is the command name: 'join'
+		if(argc == 2){
+			memset(&_JOIN, 0, sizeof(struct _REQ_JOIN));
+			_JOIN.type_id = type;
+			n = strlen(argv[1]);
+			if(n > NAMELEN)
+				return _IN_ERROR;
+			memcpy(_JOIN.channel_name, argv[1], NAMELEN);
+			printf("Join request:\nType: %d\nChannel: %s\n\n", _JOIN.type_id, _JOIN.channel_name);
+			return _JOIN.type_id;
+		}
 	}else if(type == _IN_LEAVE){
-
+		//command
+		if(argc == 2){
+			memset(&_LEAVE, 0, sizeof(struct _REQ_LEAVE));
+			_LEAVE.type_id = type;
+			n = strlen(argv[1]);
+			if(n > NAMELEN)
+				return _IN_ERROR;
+			memcpy(_LEAVE.channel_name, argv[1], NAMELEN);
+			printf("Leave request:\nType: %d\nChannel: %s\n\n", _LEAVE.type_id, _LEAVE.channel_name);
+			return _LEAVE.type_id;
+		}
 	}else if(type == _IN_SAY){
 		if(argc == 2){
-			memset(&request.say, 0, sizeof(struct _SAY_REQUEST));
-			request.say.type_id = type;
+			memset(&_SAY, 0, sizeof(struct _REQ_SAY));
+			_SAY.type_id = type;
 			n = strlen(argv[0]);
 			if(n > NAMELEN)
-				return -1;
-			memcpy(request.say.channel_name, argv[0], NAMELEN);
+				return _IN_ERROR;
+			memcpy(_SAY.channel_name, argv[0], NAMELEN);
 			n = strlen(argv[1]);
 			if(n > TEXTLEN)
-				return -1;
-			memcpy(request.say.text_field, argv[1], TEXTLEN);
-			printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", request.say.type_id, request.say.channel_name, request.say.text_field);
+				return _IN_ERROR;
+			memcpy(_SAY.text_field, argv[1], TEXTLEN);
+			printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", _SAY.type_id, _SAY.channel_name, _SAY.text_field);
+			return _SAY.type_id;
 		}
-
 	}else if(type == _IN_LIST){
+		memset(&_LIST, 0, sizeof(struct _REQ_LIST));
+		_LIST.type_id = type;
+		return _LIST.type_id;
 
 	}else if(type == _IN_WHO){
-
+		//command
+		if(argc == 2){
+			memset(&_WHO, 0, sizeof(struct _REQ_WHO));
+			_WHO.type_id = type;
+			n = strlen(argv[1]);
+			if(n > NAMELEN)
+				return _IN_ERROR;
+			memcpy(_WHO.channel_name, argv[1], NAMELEN);
+			printf("Who request:\nType: %d\nChannel: %s\n\n", _WHO.type_id, _WHO.channel_name);
+			return _WHO.type_id;
+		}
 	}else if(type == _IN_LIVE){
-
+		_LIVE.type_id = type;
+		return _LIVE.type_id;
 	}else{
-		puts("ERROR: build_noncmd_request() received bad request type");
-		return -1;
+		puts("ERROR: build_request() received bad request type");
+		return _IN_ERROR;
 	}
 
-	return 0;
+	return _IN_ERROR;
 }
 
 void resolve_cmd(char * input){
@@ -200,19 +251,24 @@ void resolve_cmd(char * input){
 
 	//build_cmd_request(argc, argv);
 	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
-		build_request(_IN_LOGOUT, 0, NULL);
+		if(build_request(_IN_LOGOUT, 0, NULL) != _IN_LOGOUT)
+			puts("ERROR: build_request failed");
 
 	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
-		build_request(_IN_JOIN, argc, argv);
+		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN)
+			puts("ERROR: build_request failed");
 
 	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
-		build_request(_IN_LEAVE, argc, argv);
+		if(build_request(_IN_LEAVE, argc, argv) != _IN_LEAVE)
+			puts("ERROR: build_request failed");
 
 	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
-		build_request(_IN_LIST, 0, NULL);
+		if(build_request(_IN_LIST, 0, NULL) != _IN_LIST)
+			puts("ERROR: build_request failed");
 
 	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
-		build_request(_IN_WHO, argc, argv);
+		if(build_request(_IN_WHO, argc, argv) != _IN_WHO)
+			puts("ERROR: build_request failed");
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
@@ -244,11 +300,17 @@ void send_request(char * out_buf){
 
 void user_prompt(){
 	char *input;
+	char **argv;
 	int n;
 
 	input = (char *)malloc(BUFSIZE);
 	if(!input)
 		error("ERROR: malloc returned null in user_prompt()");
+	argv = malloc((sizeof(char *))*2);
+	if(!argv)
+		error("ERROR: malloc returned null in user_prompt()");
+	argv[0] = session->active_channel;
+	argv[1] = input;
 
 	while(1){
 		memset(input, 0, BUFSIZE);
@@ -261,10 +323,12 @@ void user_prompt(){
 		}else if(input[0] == 0x2e){
 			break;
 		}else{
-			printf("Sending message: %s\n", input);
+			//printf("Sending message: %s\n", input);	
+			build_request(_IN_SAY, 2, argv);
 		}
 	}
 
+	free(argv);
 	free(input);
 
 	return;
@@ -327,14 +391,7 @@ void init_server_connection() {
 				error("ERROR: sendto failed");
 
 			n = recvfrom(sockfd, in_buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-                        printf("Received msg:\t%s\n", in_buf);
-
-			//if(memcmp(buf, "EXIT", 4) == 0 || memcmp(buf, "KILL", 4) == 0){
-			//	puts("Closing Connection");
-			//	break;
-		//}else if(memcmp(buf, "hello", 5) == 0){ /*For testing, remove when done*/
-		//	n = recvfrom(sockfd, in_buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-		//	printf("Received msg:\t%s\n", in_buf);
+                        printf("Received msg:\t%s\n", in_buf);	
 		}
 	}
 
@@ -370,11 +427,14 @@ int main(int argc, char **argv) {
 	session->name = malloc(NAMELEN+4);
 	if(!session->name)
 		error("ERROR: main() failed to allocate space for user's name");
-	memset(session->name, 0, NAMELEN+4);
+	//memset(session->name, 0, NAMELEN+4);
 	strncpy(session->name, argv[3], NAMELEN);
+	char channel[]="Commons";
+	strncpy(session->active_channel, channel, NAMELEN);
 
 	//init_server_connection();
-	//user_prompt();
+	user_prompt();
+	/*
 	build_request(_IN_LOGIN, 0, NULL);
 	char ch_name[]="BigBossChannel";
 	char text[]="Hello from big boss wtf..";
@@ -382,8 +442,8 @@ int main(int argc, char **argv) {
 	testv[0] = ch_name;
 	testv[1] = text;
 	build_request(_IN_SAY, 2, testv);
-
-	free(testv);
+	*/
+	//free(testv);
 	free(session->name);
 	free(session);
 	return 0;
