@@ -28,6 +28,22 @@ const char _CMD_LIST[]="list";
 const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
+typedef struct _LOGIN_REQUEST{
+	uint32_t type_id;
+	char user_name[NAMELEN+4];
+}_LOGIN_REQ;
+
+typedef struct _SAY_REQUEST{
+	uint32_t type_id;
+	char channel_name[NAMELEN+4];
+	char text_field[TEXTLEN+4];
+}_SAY_REQ;
+
+union _REQUEST{
+	_LOGIN_REQ login;
+	_SAY_REQ say;
+};
+
 struct session_info{
 	char *name;
 };
@@ -76,56 +92,52 @@ void resolve_host() {
 	return;
 }
 
-void build_cmd_request(int argc, char **argv){
-	int i;
-
-	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
-		//build_request(argc, argv);
-
-	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
-		for(i=0; i<argc; i++){
-                	printf("DEBUG:\nargv[%d]: %s\n", i, argv[i]);
-        	}
-
-	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
-		
-
-	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
-		//build_request(argc, argv);
-
-	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
-		//build_request(argc, argv);
-
-	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
-		//build_request(argc, argv);
-
-	}else{
-		printf("Command '%s' not recognized.\n", argv[0]);
-	}
-
-	return;
-}
-
-void build_noncmd_request(uint32_t t){
+int build_request(uint32_t t, int argc, char **argv){
 	uint32_t type = t;
-	char * request;
-
-	request = malloc(sizeof(struct request_template));
-	if(!request)
-		error("ERROR: build_noncmd_request() failed to allocate request struct");
-	memset(request, 0, sizeof(struct request_template));
+	size_t n;
+	union _REQUEST request;
 
 	if(type == _IN_LOGIN){
 		if(session->name){
-			
+			memset(&request.login, 0, sizeof(struct _LOGIN_REQUEST));
+			request.login.type_id = type;
+			memcpy(request.login.user_name, session->name, NAMELEN);
+			printf("Login request:\nType: %d\nName: %s\n", request.login.type_id, request.login.user_name);
+			return 0;
 		}
 	}else if(type == _IN_LOGOUT){
+
+	}else if(type == _IN_JOIN){
+
+	}else if(type == _IN_LEAVE){
+
+	}else if(type == _IN_SAY){
+		if(argc == 2){
+			memset(&request.say, 0, sizeof(struct _SAY_REQUEST));
+			request.say.type_id = type;
+			n = strlen(argv[0]);
+			if(n > NAMELEN)
+				return -1;
+			memcpy(request.say.channel_name, argv[0], NAMELEN);
+			n = strlen(argv[1]);
+			if(n > TEXTLEN)
+				return -1;
+			memcpy(request.say.text_field, argv[1], TEXTLEN);
+			printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", request.say.type_id, request.say.channel_name, request.say.text_field);
+		}
+
+	}else if(type == _IN_LIST){
+
+	}else if(type == _IN_WHO){
 
 	}else if(type == _IN_LIVE){
 
 	}else{
-		error("ERROR: build_noncmd_request() received bad request type");
+		puts("ERROR: build_noncmd_request() received bad request type");
+		return -1;
 	}
+
+	return 0;
 }
 
 void resolve_cmd(char * input){
@@ -186,7 +198,30 @@ void resolve_cmd(char * input){
 			error("ERROR: offset ran out of buffer bounds");	
 	}
 
-	build_cmd_request(argc, argv);
+	//build_cmd_request(argc, argv);
+	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
+		build_request(_IN_LOGOUT, 0, NULL);
+
+	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
+		build_request(_IN_JOIN, argc, argv);
+
+	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
+		build_request(_IN_LEAVE, argc, argv);
+
+	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
+		build_request(_IN_LIST, 0, NULL);
+
+	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
+		build_request(_IN_WHO, argc, argv);
+
+	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
+		/*No request needed, client keeps track of this*/
+		printf("Sure sure, switching to channel: %s\n", argv[1]);
+
+	}else{
+		printf("Command '%s' not recognized.\n", argv[0]);
+	}
+
 
 	for(i=0; i<argc; i++){
 		free(argv[i]);
@@ -199,6 +234,7 @@ void resolve_cmd(char * input){
 void send_request(char * out_buf){
 	int n;
 
+	int serverlen = sizeof(serveraddr);
 	n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
 	if(n < 0)
 		error("ERROR: sendto failed");
@@ -338,9 +374,25 @@ int main(int argc, char **argv) {
 	strncpy(session->name, argv[3], NAMELEN);
 
 	//init_server_connection();
-	user_prompt();
+	//user_prompt();
+	build_request(_IN_LOGIN, 0, NULL);
+	char ch_name[]="BigBossChannel";
+	char text[]="Hello from big boss wtf..";
+	char **testv = malloc((sizeof(char *))*2);
+	testv[0] = ch_name;
+	testv[1] = text;
+	build_request(_IN_SAY, 2, testv);
 
+	free(testv);
 	free(session->name);
 	free(session);
 	return 0;
 }
+
+
+
+
+
+
+
+
