@@ -10,6 +10,7 @@
 #define BUFSIZE 512
 #define NAMELEN 32
 #define TEXTLEN 64
+#define REQSIZE 132 //sizeof(type_id) + sizeof(channel_name) + sizeof(user_name) + sizeof(text_field)
 
 const uint32_t _IN_LOGIN = 0;
 const uint32_t _IN_LOGOUT = 1;
@@ -28,9 +29,11 @@ const char _CMD_LIST[]="list";
 const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
+void send_request(uint32_t t);
+
 struct __attribute__((__packed__)) _REQ_LOGIN{
 	uint32_t type_id;
-	char user_name[NAMELEN+4];
+	char user_name[NAMELEN];
 }_LOGIN;
 
 struct __attribute__((__packed__)) _REQ_LOGOUT{
@@ -39,18 +42,19 @@ struct __attribute__((__packed__)) _REQ_LOGOUT{
 
 struct __attribute__((__packed__)) _REQ_JOIN{
 	uint32_t type_id;
-	char channel_name[NAMELEN+4];
+	char channel_name[NAMELEN];
 }_JOIN;
 
 struct __attribute__((__packed__)) _REQ_LEAVE{
 	uint32_t type_id;
-	char channel_name[NAMELEN+4];
+	char channel_name[NAMELEN];
 }_LEAVE;
 
 struct __attribute__((__packed__)) _REQ_SAY{
 	uint32_t type_id;
-	char channel_name[NAMELEN+4];
-	char text_field[TEXTLEN+4];
+	char channel_name[NAMELEN];
+	char user_name[NAMELEN];
+	char text_field[TEXTLEN];
 }_SAY;
 
 struct __attribute__((__packed__)) _REQ_LIST{
@@ -59,12 +63,15 @@ struct __attribute__((__packed__)) _REQ_LIST{
 
 struct __attribute__((__packed__)) _REQ_WHO{
 	uint32_t type_id;
-	char channel_name[NAMELEN+4];
+	char channel_name[NAMELEN];
 }_WHO;
 
 struct __attribute__((__packed__)) _REQ_LIVE{
 	uint32_t type_id;
 }_LIVE;
+
+void **_REQ_ARRAY[8];
+unsigned int _REQ_SIZES[8];
 
 struct session_info{
 	char *name;
@@ -147,6 +154,8 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			memcpy(_LEAVE.channel_name, argv[1], NAMELEN);
 			printf("Leave request:\nType: %d\nChannel: %s\n\n", _LEAVE.type_id, _LEAVE.channel_name);
 			return _LEAVE.type_id;
+		}else{
+			printf("Command Error: /leave was given an invalid number of arguments\n");
 		}
 	}else if(type == _IN_SAY){
 		if(argc == 2){
@@ -249,26 +258,41 @@ void resolve_cmd(char * input){
 			error("ERROR: offset ran out of buffer bounds");	
 	}
 
-	//build_cmd_request(argc, argv);
 	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
-		if(build_request(_IN_LOGOUT, 0, NULL) != _IN_LOGOUT)
+		if(build_request(_IN_LOGOUT, 0, NULL) != _IN_LOGOUT){
 			puts("ERROR: build_request failed");
+			//free argv's and argv
+			return;
+		}
+		send_request(_IN_LOGOUT);
 
 	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
-		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN)
+		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN){
 			puts("ERROR: build_request failed");
+			return;
+		}
+		send_request(_IN_JOIN);
 
 	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
-		if(build_request(_IN_LEAVE, argc, argv) != _IN_LEAVE)
+		if(build_request(_IN_LEAVE, argc, argv) != _IN_LEAVE){
 			puts("ERROR: build_request failed");
+			return;
+		}
+		send_request(_IN_LEAVE);
 
 	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
-		if(build_request(_IN_LIST, 0, NULL) != _IN_LIST)
+		if(build_request(_IN_LIST, 0, NULL) != _IN_LIST){
 			puts("ERROR: build_request failed");
+			return;
+		}
+		send_request(_IN_LIST);
 
 	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
-		if(build_request(_IN_WHO, argc, argv) != _IN_WHO)
+		if(build_request(_IN_WHO, argc, argv) != _IN_WHO){
 			puts("ERROR: build_request failed");
+			return;
+		}
+		send_request(_IN_WHO);
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
@@ -287,14 +311,34 @@ void resolve_cmd(char * input){
 	return;
 }
 
-void send_request(char * out_buf){
-	int n;
+void send_request(uint32_t t){
+	char out_buf[REQSIZE];
+	uint32_t type = t;
+	int n, size;
 
+	if(type > 7)
+		error("ERROR: send_request() got invalid request type");
+
+	size = _REQ_SIZES[type];
+	memset(out_buf, 0, REQSIZE);
+
+	if(_REQ_ARRAY[type] == NULL || size < 0 || size > REQSIZE)
+		error("ERROR: send_request() received invalid request size");
+
+	memcpy(out_buf, _REQ_ARRAY[type], size);
+	
 	int serverlen = sizeof(serveraddr);
-	n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
+	/*
+	printf("Sending request with size: %d\n", size);
+	for(n=0; n<size; n+=1){
+		printf("%02x", out_buf[n]);
+		if(!(n%4))
+			puts("");
+	}
+	*/
+	n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
 	if(n < 0)
 		error("ERROR: sendto failed");
-
 	return;
 }
 
@@ -314,17 +358,30 @@ void user_prompt(){
 
 	while(1){
 		memset(input, 0, BUFSIZE);
-		printf("> ");
-		if(fgets(input, BUFSIZE, stdin) == NULL)
-			continue;
+		write(1, "> ", 2);
+		//printf("> ");
+		//if(fgets(input, BUFSIZE, stdin) == NULL)
+		//	continue;
+		n=0;
+		while(n < BUFSIZE){
+			if((read(0, &input[n], 1)) < 1)
+				break;
+			if(input[n] == 0x0a || input[n] == 0x00){
+				input[n] = 0x00;
+				break;
+			}else if(input[n] == 0x20){
+				input[n] = 0x00;
+			}
+			n++;
+		}
 
 		if(input[0] == 0x2f){
 			resolve_cmd(input);
 		}else if(input[0] == 0x2e){
 			break;
-		}else{
-			//printf("Sending message: %s\n", input);	
+		}else{	
 			build_request(_IN_SAY, 2, argv);
+			send_request(_IN_SAY);
 		}
 	}
 
@@ -334,69 +391,33 @@ void user_prompt(){
 	return;
 }
 
-void init_server_connection() {
+int init_server_connection() {
 	int n, serverlen;
 	char buf[BUFSIZE];
-	char in_buf[BUFSIZE];
 	char out_buf[BUFSIZE];
-	char ENTER_CHAT[] = "ENTER";
 
 	memset(buf, 0, BUFSIZE);
-	memset(in_buf, 0, BUFSIZE);
 	memset(out_buf, 0, BUFSIZE);
 
 	resolve_host();
 
-	/* send the message to the server */
-	serverlen = sizeof(serveraddr);
-	memcpy(out_buf, &_IN_LOGIN, sizeof(_IN_LOGIN));
-	n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
-	if (n < 0) 
-		error("ERROR in sendto");
-     
+	/* Start server handshake */
+	serverlen = sizeof(serveraddr);     
+	build_request(_IN_LOGIN, 0, NULL);
+	send_request(_IN_LOGIN);
 	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-	if (n < 0) 
-		error("ERROR in recvfrom");
+	if (n < 0){
+		puts("ERROR: login failed");
+		return -1;
+	}
 	printf("Server requested to use port# %s\n", buf);
 	portno = atoi(buf);
 	serveraddr.sin_port = htons(portno);
 
-	n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
-        if (n < 0)
-                error("ERROR in sendto");
+	build_request(_IN_LOGIN, 0, NULL);
+	send_request(_IN_LOGIN);
 
-
-	while(1){
-		memset(buf, 0, BUFSIZE);
-		memset(in_buf, 0, BUFSIZE);
-		memset(out_buf, 0, BUFSIZE);
-
-		printf("Please enter msg: ");
-		fgets(buf, BUFSIZE, stdin);
-
-		if(memcmp(buf, "EXIT", 4) == 0 || memcmp(buf, "KILL", 4) == 0){
-			memcpy(out_buf, &_IN_LEAVE, 4);
-			n = sendto(sockfd, out_buf, 4, 0, (struct sockaddr *)&serveraddr, serverlen);
-			if(n < 0)
-				error("ERROR: sendto failed");
-
-                        puts("Closing Connection");
-                        break;
-		}else{
-			memcpy(out_buf, &_IN_SAY, 4);
-			memcpy(&out_buf[4], buf, BUFSIZE-4);
-
-			n = sendto(sockfd, out_buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, serverlen);
-			if(n < 0)
-				error("ERROR: sendto failed");
-
-			n = recvfrom(sockfd, in_buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-                        printf("Received msg:\t%s\n", in_buf);	
-		}
-	}
-
-	close(sockfd);
-	return;
+	return 0;
 }
 
 int main(int argc, char **argv) {
@@ -427,23 +448,40 @@ int main(int argc, char **argv) {
 	session->name = malloc(NAMELEN+4);
 	if(!session->name)
 		error("ERROR: main() failed to allocate space for user's name");
-	//memset(session->name, 0, NAMELEN+4);
+	
 	strncpy(session->name, argv[3], NAMELEN);
+
+	/*Fix this. Channel should not default to Commons until login succeeds*/
 	char channel[]="Commons";
 	strncpy(session->active_channel, channel, NAMELEN);
 
-	//init_server_connection();
-	user_prompt();
-	/*
-	build_request(_IN_LOGIN, 0, NULL);
-	char ch_name[]="BigBossChannel";
-	char text[]="Hello from big boss wtf..";
-	char **testv = malloc((sizeof(char *))*2);
-	testv[0] = ch_name;
-	testv[1] = text;
-	build_request(_IN_SAY, 2, testv);
-	*/
-	//free(testv);
+	_REQ_ARRAY[0] = (void *)&_LOGIN;
+	_REQ_SIZES[0] = sizeof(struct _REQ_LOGIN);
+
+	_REQ_ARRAY[1] = (void *)&_LOGOUT;
+	_REQ_SIZES[1] = sizeof(struct _REQ_LOGOUT);
+
+	_REQ_ARRAY[2] = (void *)&_JOIN;
+	_REQ_SIZES[2] = sizeof(struct _REQ_JOIN);
+
+	_REQ_ARRAY[3] = (void *)&_LEAVE;
+	_REQ_SIZES[3] = sizeof(struct _REQ_LEAVE);
+
+	_REQ_ARRAY[4] = (void *)&_SAY;
+	_REQ_SIZES[4] = sizeof(struct _REQ_SAY);
+
+	_REQ_ARRAY[5] = (void *)&_LIST;
+	_REQ_SIZES[5] = sizeof(struct _REQ_LIST);
+
+	_REQ_ARRAY[6] = (void *)&_WHO;
+	_REQ_SIZES[6] = sizeof(struct _REQ_WHO);
+
+	_REQ_ARRAY[7] = (void *)&_LIVE;
+	_REQ_SIZES[7] = sizeof(struct _REQ_LIVE);
+		
+	if(init_server_connection() == 0)
+		user_prompt();
+
 	free(session->name);
 	free(session);
 	return 0;
