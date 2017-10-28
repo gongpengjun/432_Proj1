@@ -5,12 +5,13 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h> 
+#include <netdb.h>
+#include <pthread.h>
 
 #define BUFSIZE 512
 #define NAMELEN 32
 #define TEXTLEN 64
-#define REQSIZE 132 //sizeof(type_id) + sizeof(channel_name) + sizeof(user_name) + sizeof(text_field)
+#define REQSIZE 100 //sizeof(type_id) + sizeof(channel_name) + sizeof(text_field)
 
 const uint32_t _IN_LOGIN = 0;
 const uint32_t _IN_LOGOUT = 1;
@@ -53,7 +54,7 @@ struct __attribute__((__packed__)) _REQ_LEAVE{
 struct __attribute__((__packed__)) _REQ_SAY{
 	uint32_t type_id;
 	char channel_name[NAMELEN];
-	char user_name[NAMELEN];
+	//char user_name[NAMELEN];
 	char text_field[TEXTLEN];
 }_SAY;
 
@@ -86,6 +87,8 @@ struct sockaddr_in serveraddr;
 struct hostent *server;
 struct session_info *session;
 char *hostname;
+
+pthread_t tid;
 
 void error(char *msg) {
 	perror(msg);
@@ -342,6 +345,29 @@ void send_request(uint32_t t){
 	return;
 }
 
+void *recv_request(void *vargp){
+	char input[BUFSIZE];	
+	int n, serverlen;
+
+	serverlen = sizeof(serveraddr);
+	while(1){
+		memset(input, 0, BUFSIZE);
+		n = recvfrom(sockfd, input, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
+		if (n < 0){
+			puts("recvfrom failed in recv_request");
+		}else{
+			printf("Received message: %s\n", input);
+		}
+
+		if(!memcmp(input, &_IN_LOGOUT, 4)){
+			printf("Thread (%d) is returning\n", tid);
+			break;
+		}
+	}
+	pthread_exit(NULL);
+	//return;
+}
+
 void user_prompt(){
 	char *input;
 	char **argv;
@@ -369,9 +395,9 @@ void user_prompt(){
 			if(input[n] == 0x0a || input[n] == 0x00){
 				input[n] = 0x00;
 				break;
-			}else if(input[n] == 0x20){
-				input[n] = 0x00;
-			}
+			}//else if(input[n] == 0x20){
+			//	input[n] = 0x00;
+			//}
 			n++;
 		}
 
@@ -479,8 +505,12 @@ int main(int argc, char **argv) {
 	_REQ_ARRAY[7] = (void *)&_LIVE;
 	_REQ_SIZES[7] = sizeof(struct _REQ_LIVE);
 		
-	if(init_server_connection() == 0)
+	if(init_server_connection() == 0){
+		pthread_create(&tid, NULL, recv_request, NULL);
 		user_prompt();
+		//printf("Waiting for thread (%d) to return\n", tid);
+		//pthread_join(tid, NULL);
+	}
 
 	free(session->name);
 	free(session);

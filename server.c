@@ -13,7 +13,7 @@
 #define BUFSIZE 512
 #define MAXUINTLEN 20
 #define MAXCLIENTNUM 100
-#define MSGSIZE 132
+#define MSGSIZE 100
 #define NAMELEN 32
 #define TEXTLEN 64
 
@@ -84,7 +84,7 @@ struct chat_protocol{
 };
 
 struct channel{
-	char name[64];			//name of channel
+	char name[NAMELEN];			//name of channel
 	int portno;			//port number assigned to channel
 	char portstr[MAXUINTLEN];
 	pid_t pid;			//id of proc assigned to channel
@@ -111,6 +111,7 @@ struct sockaddr_in **connected_clients;
 struct sockaddr_in clientaddr;
 char *hostaddrp;
 int clientlen;
+int tmp_sockfd;
 fd_set read_fds, write_fds;
 
 pid_t pid;
@@ -205,15 +206,17 @@ int user_lookup(char *addr, char *uname){
 		return -1;
 
 	n = strlen(addr);
-	if(n > 0){
-		for(i=0; i<ch->num_users; i++){
-			if(!strncmp(ch->users[i]->hostaddrp, addr, n)){
-				if(!uname)
-					return i;
-				if(!memcmp(ch->users[i]->uname, uname, NAMELEN))
-					return i;
+	if(n < 1){
+		debug("user_lookup received invalid user name length");
+		return -1;
+	}
+	for(i=0; i<ch->num_users; i++){
+		if(!strncmp(ch->users[i]->hostaddrp, addr, n)){
+			if(!uname)
+				return i;
+			if(!memcmp(ch->users[i]->uname, uname, NAMELEN))
+				return i;
 			}
-		}
 	}
 
 	return -1;
@@ -246,10 +249,14 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 
 int client_logout(int index){
 	int i = index;
+	int n;
 	struct user *client;
 
 	client = this_channel->users[i];
 	if(client){
+		n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->clientaddr, sizeof(clientaddr));
+		if(n < 1)
+			puts("Logout ack failed to send");
 		snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->uname, client->hostaddrp);
 		server_log(logging_msg);
 		free(client);
@@ -296,6 +303,44 @@ int client_login(struct _REQ_NEW *req, char *uname){
 	return 0;
 }
 
+void queue_say_request(struct _REQ_NEW * req, int idx){
+	struct _REQ_SAY * _SAY;
+	char *uname;
+	int index = idx;
+	int i,n;
+
+	_SAY = malloc(sizeof(struct _REQ_SAY));
+ 	if(!_SAY){
+		debug("handle_request failed to allocate space for Say request");
+		return;
+	}
+
+	memset(_SAY, 0, sizeof(struct _REQ_SAY));
+	_SAY->type_id = _IN_SAY;
+	memcpy(_SAY->channel_name, this_channel->name, NAMELEN);
+	memcpy(_SAY->user_name, this_channel->users[index]->uname, NAMELEN);
+	memcpy(_SAY->text_field, &req->data[sizeof(uint32_t)+NAMELEN], TEXTLEN);
+
+	snprintf(logging_msg, 128, "Queued Say request:\n\ttype_id: %d\n\tchannel name: %s\n\tuser name: %s\n\tmessage: %s",
+		_SAY->type_id, _SAY->channel_name, _SAY->user_name, _SAY->text_field);
+	server_log(logging_msg);
+
+	i=0;
+	while(this_channel->users[i]){
+		snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
+		server_log(logging_msg);
+		n = sendto(tmp_sockfd, _SAY->text_field, 64, 0, (struct sockaddr *)&this_channel->users[i]->clientaddr, sizeof(clientaddr));
+		if(n < 0)
+			debug("failed to send message to client");
+		i++;
+	}	
+
+
+	free(_SAY);
+
+	return;
+}
+
 uint32_t handle_request(struct _REQ_NEW * req){
 	/**/
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
@@ -317,7 +362,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	if(type_id == _IN_LOGIN){
 		server_log("Type: Login");
 		server_log("Client requested to login to channel");
-		if(req->size > (NAMELEN+sizeof(uint32_t)) || req->size <= sizeof(uint32_t)){
+		if(req->size != (sizeof(uint32_t)+NAMELEN)){	//> (NAMELEN+sizeof(uint32_t)) || req->size <= sizeof(uint32_t)){
 			server_log("Login request has invalid size");
 			return(_IN_ERROR + _IN_LOGIN);
 		}
@@ -337,6 +382,11 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		* Should implement some form of logout verification, or else another user 
 		* could forge source ip and logout other users.
 		*/
+		if(req->size != sizeof(uint32_t)){
+			server_log("Logout request has invalid size");
+			return(_IN_ERROR + _IN_LOGOUT);
+		}
+
 		n = user_lookup(req->hostaddrp, NULL);
 		if(n != -1){
 			client_logout(n);
@@ -349,6 +399,10 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_JOIN){
                 server_log("Type: Join");
+		if(req->size != (sizeof(uint32_t)+NAMELEN)){
+			server_log("Join request has invalid size");
+			return(_IN_ERROR + _IN_JOIN);
+		}
 		return _IN_JOIN;
 		//break;
 
@@ -359,10 +413,23 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_SAY){
 		server_log("Type: Say");
-		if(req->size > (4 + NAMELEN + TEXTLEN)){
+		if(req->size != MSGSIZE){
 			server_log("Say request has invalid size");
 			return(_IN_ERROR + _IN_SAY);
 		}
+
+		if(strncmp(&req->data[sizeof(uint32_t)], this_channel->name, strlen(this_channel->name))){
+			server_log("Say request sent to wrong channel");
+			return(_IN_ERROR + _IN_SAY);
+		}
+
+		n = user_lookup(req->hostaddrp, NULL);
+		if(n < 0){
+			server_log("received Say request from non-authenticated user");
+			return(_IN_ERROR + _IN_SAY);
+		}
+
+		queue_say_request(req, n);	
 		
 		return _IN_SAY;
 
@@ -392,6 +459,8 @@ void start_channel(int sfd, struct channel *ch){
 	int sockfd = sfd;
 	int i, n;
 
+	tmp_sockfd = sockfd;
+
 	this_channel = ch;
 	this_channel->num_users = 0;
 	this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
@@ -418,7 +487,8 @@ void start_channel(int sfd, struct channel *ch){
 			debug("Closing channel and exiting child process");
 			free(msg);
 			break;
-		}else if(msg_type == _IN_SAY){
+		}/*
+		else if(msg_type == _IN_SAY){
 			i=0;
 			while(this_channel->users[i]){
 				snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
@@ -428,7 +498,7 @@ void start_channel(int sfd, struct channel *ch){
 					debug("failed to send message to client");
 				i++;
 			}	
-		}
+		}*/
 
 		free(msg);	
 	}
