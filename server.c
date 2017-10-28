@@ -93,9 +93,9 @@ struct channel{
 };
 
 struct user{
-	char uname[64];
+	char uname[NAMELEN];
 	unsigned int id;
-	struct sockaddr_in *clientaddr;
+	struct sockaddr_in clientaddr;
 	struct hostent *hostp;		//client host info
 	char *hostaddrp;		//dotted decimal host addr str
 };
@@ -166,7 +166,7 @@ int bind_new_socket(struct sockaddr_in serveraddr, int p) {
 	return sockfd;
 }
 
-char * resolve_client(){
+char * resolve_client(struct sockaddr_in *clientaddr){
 	int n;
 	char *hostaddrp;
 	char *hostaddrp_copy;
@@ -174,7 +174,7 @@ char * resolve_client(){
 	*Copy result of inet_ntoa() or it will be lost. From man pages:
 	*The string is returned in a statically allocated buffer, which subsequent calls will overwrite.
 	*/
-	hostaddrp = inet_ntoa(clientaddr.sin_addr);
+	hostaddrp = inet_ntoa(clientaddr->sin_addr);
 	if (hostaddrp == NULL) //might want to just return null here instead of exiting the process
 		error("ERROR on inet_ntoa\n");
 
@@ -192,7 +192,7 @@ char * resolve_client(){
 	return hostaddrp_copy;
 }
 
-int user_lookup(char *addr){
+int user_lookup(char *addr, char *uname){
 	/*
 	* Returns index of user struct * if addr is found
 	* returns -1 if user is not found
@@ -207,8 +207,12 @@ int user_lookup(char *addr){
 	n = strlen(addr);
 	if(n > 0){
 		for(i=0; i<ch->num_users; i++){
-			if(!strncmp(ch->users[i]->hostaddrp, addr, n))
-				return i;
+			if(!strncmp(ch->users[i]->hostaddrp, addr, n)){
+				if(!uname)
+					return i;
+				if(!memcmp(ch->users[i]->uname, uname, NAMELEN))
+					return i;
+			}
 		}
 	}
 
@@ -228,21 +232,45 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 	memset(&msg->clientaddr, 0, msg->clientlen);
 
 	msg->size = recvfrom(sockfd, msg->data, MSGSIZE, 0, (struct sockaddr *)&msg->clientaddr, &msg->clientlen);
+	printf("Request size: %d\n", msg->size);
 	if(msg->size < 0)
 		error("ERROR: recvfrom returned invalid message length");
 
 	/*Resolve ip addr of client and check if ip exists in connected users*/
-	msg->hostaddrp = resolve_client();
+	msg->hostaddrp = resolve_client(&msg->clientaddr);
 	snprintf(logging_msg, 128, "resolved client address: %s", msg->hostaddrp);
 	server_log(logging_msg);
 
 	return msg;
 }
 
-void client_login(struct sockaddr_in *addr){
+int client_logout(int index){
+	int i = index;
+	struct user *client;
+
+	client = this_channel->users[i];
+	if(client){
+		snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->uname, client->hostaddrp);
+		server_log(logging_msg);
+		free(client);
+	}
+
+	while(i < this_channel->num_users){
+		this_channel->users[i] = this_channel->users[i+1];
+		i++;
+	}
+
+	if(this_channel->num_users > 0)
+		this_channel->num_users--;
+
+	return 0;
+}
+
+int client_login(struct _REQ_NEW *req, char *uname){
 	/*
 	* Create and fill new user struct and add it to the channel users list 
 	*/
+	int n;
 	struct user *new_user;
 
 	/*Allocate user struct for new client*/
@@ -253,26 +281,26 @@ void client_login(struct sockaddr_in *addr){
 	new_user = this_channel->users[this_channel->num_users];
 	this_channel->num_users++;
 
-	/*Allocate sockaddr_in clientaddr struct for new client*/
-	new_user->clientaddr = malloc(sizeof(struct sockaddr_in));
-	if(!new_user->clientaddr)
-		error("ERROR: start_channel() failed to malloc space for new user clientaddr");
+	memset(new_user, 0, sizeof(struct user));
 
-	memset(new_user->clientaddr, 0, sizeof(struct sockaddr_in));
-	memcpy(new_user->clientaddr, addr, sizeof(struct sockaddr_in));
+	memcpy(&new_user->uname, uname, NAMELEN);
+	memcpy(&new_user->clientaddr, &req->clientaddr, req->clientlen);
+	if(req->hostaddrp == NULL){
+		debug("received request with NULL hostaddrp");
+		return -1;
+	}
+	new_user->hostaddrp = req->hostaddrp;
+	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
+	server_log(logging_msg);
 
-	new_user->hostaddrp = resolve_client();
-	if(new_user->hostaddrp == NULL)
-		debug("resolve_client returned null hostaddrp");
-
-	server_log("client added to channel");	
-
-	return;
+	return 0;
 }
 
 uint32_t handle_request(struct _REQ_NEW * req){
-	char msg[MSGSIZE+4];
+	/**/
+	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
+	int n;
 	
 	memset(msg, 0, MSGSIZE+4);
 	memcpy(&type_id, req->data, 4);
@@ -289,20 +317,35 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	if(type_id == _IN_LOGIN){
 		server_log("Type: Login");
 		server_log("Client requested to login to channel");
-		if(user_lookup(req->hostaddrp) < 0){
-                	client_login(&clientaddr);
+		if(req->size > (NAMELEN+sizeof(uint32_t)) || req->size <= sizeof(uint32_t)){
+			server_log("Login request has invalid size");
+			return(_IN_ERROR + _IN_LOGIN);
+		}
+
+		memcpy(msg, &req->data[4], NAMELEN);
+		if(user_lookup(req->hostaddrp, msg) < 0){
+                	client_login(req, msg);
 		}else{
 			debug("Login request received from already authenticated user");
 		}
+
 		return _IN_LOGIN;
-		//break;
 
 	}else if(type_id == _IN_LOGOUT){
                 server_log("Type: Logout");
-		server_log("Client is logging out");
-		return _IN_LOGOUT;
-		//Clean user struct
-		//break;
+		/*
+		* Should implement some form of logout verification, or else another user 
+		* could forge source ip and logout other users.
+		*/
+		n = user_lookup(req->hostaddrp, NULL);
+		if(n != -1){
+			client_logout(n);
+		}else{
+			server_log("Received logout request from non-authenticated user");
+			return(_IN_ERROR + _IN_LOGOUT);
+		}
+
+		return _IN_LOGOUT;	
 
 	}else if(type_id == _IN_JOIN){
                 server_log("Type: Join");
@@ -315,8 +358,12 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		return _IN_LEAVE;
 
 	}else if(type_id == _IN_SAY){
-                server_log("Type: Say");
-		server_log("Client requested to post a message on the channel");
+		server_log("Type: Say");
+		if(req->size > (4 + NAMELEN + TEXTLEN)){
+			server_log("Say request has invalid size");
+			return(_IN_ERROR + _IN_SAY);
+		}
+		
 		return _IN_SAY;
 
 	}else if(type_id == _IN_LIST){
@@ -361,20 +408,22 @@ void start_channel(int sfd, struct channel *ch){
 	while(1){
 		msg = accept_input_blk(sockfd);
 		msg_type = handle_request(msg);
+		if(msg_type == _IN_ERROR || msg_type == (msg_type + _IN_ERROR)){
+			debug("Server received invalid request");
+			free(msg);
+			continue;
+		}
+
 		if(msg_type == _IN_LOGOUT){
-			debug("user has been logged out");
-			//free(msg);
-			//break;
-		}else if(msg_type == _IN_LEAVE){
+			debug("Closing channel and exiting child process");
 			free(msg);
 			break;
 		}else if(msg_type == _IN_SAY){
-
 			i=0;
 			while(this_channel->users[i]){
 				snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
 				server_log(logging_msg);
-				n = sendto(sockfd, msg->data, MSGSIZE, 0, (struct sockaddr *)this_channel->users[i]->clientaddr, sizeof(struct sockaddr_in));
+				n = sendto(sockfd, msg->data, MSGSIZE, 0, (struct sockaddr *)&this_channel->users[i]->clientaddr, msg->clientlen);
 				if(n < 0)
 					debug("failed to send message to client");
 				i++;
@@ -386,8 +435,8 @@ void start_channel(int sfd, struct channel *ch){
 
 	i=0;
 	while(this_channel->users[i]){
-		if(this_channel->users[i]->clientaddr)
-			free(this_channel->users[i]->clientaddr);
+		//if(&this_channel->users[i]->clientaddr)
+		//	free(this_channel->users[i]->clientaddr);
 		if(this_channel->users[i]->hostaddrp)
 			free(this_channel->users[i]->hostaddrp);
 
