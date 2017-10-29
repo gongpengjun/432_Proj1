@@ -7,9 +7,14 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sys/shm.h>
+#include <errno.h>
+#include <semaphore.h>
+#include <fcntl.h>
 
 #define BUFSIZE 512
 #define MAXUINTLEN 20
@@ -81,9 +86,13 @@ struct _REQ_QUEUE{
 };
 
 struct channel{
-	char name[NAMELEN];			//name of channel
+	char name[NAMELEN];		//name of channel. Also, channel name is used as semaphore name
 	int portno;			//port number assigned to channel
 	char portstr[MAXUINTLEN];
+	int sockfd;
+	sem_t *sem_lock;
+	unsigned int sem_value;
+	void *shmem;
 	pid_t pid;			//id of proc assigned to channel
 	struct user **users;		//array of pointers to user structs. keeps track of connected clients in channel
 	unsigned int num_users;
@@ -508,6 +517,23 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	return _IN_ERROR;
 }
 
+void test_shmem(){
+	unsigned int i;
+	char str1[]="Child accessed shmem\n";
+
+	puts("[*] Testing Shmem");
+	i = sem_getvalue(this_channel->sem_lock, &this_channel->sem_value);
+	printf("sem_lock value: %u\n", i);
+
+	sem_wait(this_channel->sem_lock);
+	printf("Child read: %s\n", this_channel->shmem);
+	strncpy(this_channel->shmem, str1, strlen(str1));
+	sem_post(this_channel->sem_lock);
+
+	puts("Child unlocked semaphore");
+	return;
+}
+
 void start_channel(int sfd, struct channel *ch){
 	struct _REQ_NEW * msg;
 	char *userhost_addr;
@@ -518,6 +544,11 @@ void start_channel(int sfd, struct channel *ch){
 	tmp_sockfd = sockfd;
 
 	this_channel = ch;
+	test_shmem();
+	sem_unlink(this_channel->name);
+        sem_close(this_channel->sem_lock);
+
+	//this_channel = ch;
 	this_channel->num_users = 0;
 	this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
 	if(!this_channel->users)
@@ -567,6 +598,30 @@ void start_channel(int sfd, struct channel *ch){
 	exit(0);
 }
 
+void *create_shmem(size_t size){
+	int prot = PROT_READ | PROT_WRITE;
+	int vis = MAP_ANONYMOUS | MAP_SHARED;
+
+	return mmap(NULL, size, prot, vis, 0, 0);
+}
+
+int init_channel_sem(struct channel *ch){
+	sem_t *sem_lock;	
+
+	//sem_lock = &ch->sem_lock;
+	ch->sem_value = 1;
+
+	if(!(ch->sem_lock = sem_open(ch->name, O_CREAT | O_EXCL, 0644, ch->sem_value))){
+		perror("ERROR: ");
+		sem_unlink(ch->name);
+		sem_close(ch->sem_lock);
+		return 1;
+	}
+	//memcpy(&ch->sem_lock, &sem_lock, sizeof(sem_t));
+	puts("Semaphore initialized");
+	return 0;
+}
+
 struct channel *create_channel(char *name, int p){
 	/*
 	* Bind to new socket and fork process.
@@ -581,10 +636,14 @@ struct channel *create_channel(char *name, int p){
 	if(!ch)
 		error("ERROR: malloc failed to allocate channel struct");
 
+	if(!strlen(name))
+		error("ERROR: channel name cannot be null");
+
 	memset(ch->name, 0, NAMELEN);
 	strncpy(ch->name, name, NAMELEN);
 
 	sockfd = bind_new_socket(serveraddr, portno);
+	ch->sockfd = sockfd;
 	serverlen = sizeof(serveraddr);
 
 	/*Resolve OS-assigned port number*/
@@ -593,6 +652,15 @@ struct channel *create_channel(char *name, int p){
 	portno = ntohs(serveraddr.sin_port);
 	ch->portno = portno;
 	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
+
+	ch->shmem = create_shmem(sizeof(struct user)+8);
+	if(!ch->shmem)
+		error("ERROR: shmem is NULL");
+	memset(ch->shmem, 0, (sizeof(struct user)+8));
+
+	if(init_channel_sem(ch))
+		if(init_channel_sem(ch))
+			error("ERROR: init_channel_sem");
 
 	pid = fork();
 	if(pid < 0)
@@ -685,9 +753,16 @@ int main(int argc, char** argv) {
 	*/
 	ch_mgr = (struct channel_MGR*)malloc(sizeof(struct channel_MGR*));
 	ch_mgr->size = 0;
-	ch_mgr->channels = malloc(256 * (sizeof(struct channel*)));
+	ch_mgr->channels = malloc(1024 * (sizeof(struct channel*)));
 	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
+
+	struct channel *ch = ch_mgr->channels[0];
+	sem_wait(ch->sem_lock);
+	printf("Parent read: %s\n", ch->shmem);
+	strncpy(ch->shmem, "Parent was here\n", 17);
+	sem_post(ch->sem_lock);
+	printf("Parent unlocked semaphore\n");
 
 	req_size = sizeof(struct _REQ_LOGIN);
 	struct _REQ_LOGIN * _LOGIN = malloc(req_size);
