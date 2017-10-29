@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #define BUFSIZE 512
 #define MAXUINTLEN 20
@@ -74,13 +75,9 @@ struct __attribute__((__packed__)) _REQ_NEW{
 	int clientlen;
 };
 
-char ENTER_CHAT[] = "ENTER";
-char EXIT_CHAT[] = "EXIT";
-
-struct chat_protocol{
-	unsigned int pkt_type;
-	unsigned int pkt_len;
-	unsigned int msg_len;
+struct _REQ_QUEUE{
+	struct _REQ_SAY *waiting[128];
+	int size;
 };
 
 struct channel{
@@ -105,6 +102,11 @@ struct channel_MGR{
 	struct channel **channels;	//commons channel is always array index 0
 };
 
+pthread_t tid;
+pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
+struct _REQ_QUEUE * req_Q;
+struct _REQ_QUEUE * req_Q_backlog;
 struct channel *this_channel;
 struct channel **channel_arr;
 struct sockaddr_in **connected_clients;
@@ -112,7 +114,6 @@ struct sockaddr_in clientaddr;
 char *hostaddrp;
 int clientlen;
 int tmp_sockfd;
-fd_set read_fds, write_fds;
 
 pid_t pid;
 char logging_msg[128];
@@ -131,15 +132,6 @@ void debug(char *msg){
 void server_log(char *msg){
 	printf("[*] SERVER-LOG (%d):\t%s\n", pid, msg);
 	memset(logging_msg, 0, 128);
-	return;
-}
-
-void clean_globals(){
-	/*
-	* Called by recently forked-child to ensure non-essential
-	* global vars copied from parent to child are cleared.
-	*/
-	FD_ZERO(&read_fds);	//redundent but just to be safe
 	return;
 }
 
@@ -303,6 +295,72 @@ int client_login(struct _REQ_NEW *req, char *uname){
 	return 0;
 }
 
+void handle_backlog(){
+	int i;
+	pthread_mutex_lock(&lock1);
+
+	if(req_Q_backlog->size < 1){
+		pthread_mutex_unlock(&lock1);
+		return;
+	}
+
+	i=0;
+	while(req_Q_backlog->waiting[i]){
+		req_Q->waiting[req_Q->size] = req_Q_backlog->waiting[i];
+		req_Q->size++;
+		req_Q_backlog->waiting[i] = NULL;
+		i++;
+	}
+	req_Q_backlog->size = 0;
+
+	pthread_mutex_unlock(&lock1);
+	return;
+}
+
+void *send_requests(void *vargp){
+	struct _REQ_SAY * _SAY;
+	struct user **clients;
+	char outbuf[MSGSIZE];
+	int i,j,n;
+
+	while(1){
+		if(req_Q->size < 1)
+			handle_backlog();
+
+		if(req_Q->size < 1)
+			continue;
+
+		for(j=0; j<req_Q->size; j++){
+			if(!req_Q->waiting[j])
+				continue;
+
+			memset(outbuf, 0, MSGSIZE);
+			_SAY = req_Q->waiting[j];
+			/*
+			* Since the request structs are packed, memcpying from type_id's address with size equal to the struct's size
+			* should copy the request data accurately.
+			*/
+			memcpy(outbuf, &_SAY->type_id, MSGSIZE);
+			pthread_mutex_lock(&lock2);
+			clients = this_channel->users;
+			i=0;
+			while(clients[i]){
+				printf("sending message to (%s)", clients[i]->hostaddrp);
+				//FIX: tmp_sockfd
+				n = sendto(tmp_sockfd, outbuf, MSGSIZE, 0, (struct sockaddr *)&clients[i]->clientaddr, sizeof(clientaddr));
+				if(n < 0)
+					debug("failed to send message to client");
+				i++;
+			}
+			pthread_mutex_unlock(&lock2);
+			free(_SAY);
+			req_Q->waiting[j] = NULL;
+		}
+
+		req_Q->size = 0;	
+	}
+}
+
 void queue_say_request(struct _REQ_NEW * req, int idx){
 	struct _REQ_SAY * _SAY;
 	char *uname;
@@ -321,22 +379,16 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	memcpy(_SAY->user_name, this_channel->users[index]->uname, NAMELEN);
 	memcpy(_SAY->text_field, &req->data[sizeof(uint32_t)+NAMELEN], TEXTLEN);
 
+	pthread_mutex_lock(&lock1);
+	if(req_Q_backlog->size < 128){	
+		req_Q_backlog->waiting[req_Q_backlog->size] = _SAY;
+		req_Q_backlog->size++;
+	}
+	pthread_mutex_unlock(&lock1);
+	
 	snprintf(logging_msg, 128, "Queued Say request:\n\ttype_id: %d\n\tchannel name: %s\n\tuser name: %s\n\tmessage: %s",
 		_SAY->type_id, _SAY->channel_name, _SAY->user_name, _SAY->text_field);
 	server_log(logging_msg);
-
-	i=0;
-	while(this_channel->users[i]){
-		snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
-		server_log(logging_msg);
-		n = sendto(tmp_sockfd, _SAY->text_field, 64, 0, (struct sockaddr *)&this_channel->users[i]->clientaddr, sizeof(clientaddr));
-		if(n < 0)
-			debug("failed to send message to client");
-		i++;
-	}	
-
-
-	free(_SAY);
 
 	return;
 }
@@ -362,14 +414,16 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	if(type_id == _IN_LOGIN){
 		server_log("Type: Login");
 		server_log("Client requested to login to channel");
-		if(req->size != (sizeof(uint32_t)+NAMELEN)){	//> (NAMELEN+sizeof(uint32_t)) || req->size <= sizeof(uint32_t)){
+		if(req->size != (sizeof(uint32_t)+NAMELEN)){
 			server_log("Login request has invalid size");
 			return(_IN_ERROR + _IN_LOGIN);
 		}
 
 		memcpy(msg, &req->data[4], NAMELEN);
 		if(user_lookup(req->hostaddrp, msg) < 0){
+			pthread_mutex_lock(&lock2);
                 	client_login(req, msg);
+			pthread_mutex_unlock(&lock2);
 		}else{
 			debug("Login request received from already authenticated user");
 		}
@@ -389,7 +443,9 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 		n = user_lookup(req->hostaddrp, NULL);
 		if(n != -1){
+			pthread_mutex_lock(&lock2);
 			client_logout(n);
+			pthread_mutex_unlock(&lock2);
 		}else{
 			server_log("Received logout request from non-authenticated user");
 			return(_IN_ERROR + _IN_LOGOUT);
@@ -474,6 +530,8 @@ void start_channel(int sfd, struct channel *ch){
 	if(sockfd < 0)
 		error("ERROR: start_channel() received bad sockfd");
 
+	pthread_create(&tid, NULL, send_requests, NULL);
+
 	while(1){
 		msg = accept_input_blk(sockfd);
 		msg_type = handle_request(msg);
@@ -487,26 +545,13 @@ void start_channel(int sfd, struct channel *ch){
 			debug("Closing channel and exiting child process");
 			free(msg);
 			break;
-		}/*
-		else if(msg_type == _IN_SAY){
-			i=0;
-			while(this_channel->users[i]){
-				snprintf(logging_msg, 128, "sending message to (%s)", this_channel->users[i]->hostaddrp);
-				server_log(logging_msg);
-				n = sendto(sockfd, msg->data, MSGSIZE, 0, (struct sockaddr *)&this_channel->users[i]->clientaddr, msg->clientlen);
-				if(n < 0)
-					debug("failed to send message to client");
-				i++;
-			}	
-		}*/
+		}
 
 		free(msg);	
 	}
 
 	i=0;
 	while(this_channel->users[i]){
-		//if(&this_channel->users[i]->clientaddr)
-		//	free(this_channel->users[i]->clientaddr);
 		if(this_channel->users[i]->hostaddrp)
 			free(this_channel->users[i]->hostaddrp);
 
@@ -536,8 +581,8 @@ struct channel *create_channel(char *name, int p){
 	if(!ch)
 		error("ERROR: malloc failed to allocate channel struct");
 
-	memset(ch->name, 0, 64);
-	strncpy(ch->name, name, 63);
+	memset(ch->name, 0, NAMELEN);
+	strncpy(ch->name, name, NAMELEN);
 
 	sockfd = bind_new_socket(serveraddr, portno);
 	serverlen = sizeof(serveraddr);
@@ -621,6 +666,19 @@ int main(int argc, char** argv) {
 
 	clientlen = sizeof(clientaddr);
 	this_channel = 0;
+
+	/*
+	* Init outgoing request queue and backlog
+	*/
+	req_Q = malloc(sizeof(struct _REQ_QUEUE));
+	req_Q_backlog = malloc(sizeof(struct _REQ_QUEUE));
+	if(!req_Q || !req_Q_backlog)
+		error("ERROR: failed to allocate space for request queues");
+
+	memset(req_Q, 0, sizeof(struct _REQ_QUEUE));
+	memset(req_Q_backlog, 0, sizeof(struct _REQ_QUEUE));
+	req_Q->size = 0;
+	req_Q_backlog->size = 0;
 
 	/*
 	*Initialize Channel Manager struct and create Commons channel

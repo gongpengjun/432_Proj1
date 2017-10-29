@@ -331,14 +331,7 @@ void send_request(uint32_t t){
 	memcpy(out_buf, _REQ_ARRAY[type], size);
 	
 	int serverlen = sizeof(serveraddr);
-	/*
-	printf("Sending request with size: %d\n", size);
-	for(n=0; n<size; n+=1){
-		printf("%02x", out_buf[n]);
-		if(!(n%4))
-			puts("");
-	}
-	*/
+
 	n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
 	if(n < 0)
 		error("ERROR: sendto failed");
@@ -355,8 +348,8 @@ void *recv_request(void *vargp){
 		n = recvfrom(sockfd, input, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
 		if (n < 0){
 			puts("recvfrom failed in recv_request");
-		}else{
-			printf("Received message: %s\n", input);
+		}else if(!memcmp(input, &_IN_SAY, 4)){
+			printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
 		}
 
 		if(!memcmp(input, &_IN_LOGOUT, 4)){
@@ -385,9 +378,7 @@ void user_prompt(){
 	while(1){
 		memset(input, 0, BUFSIZE);
 		write(1, "> ", 2);
-		//printf("> ");
-		//if(fgets(input, BUFSIZE, stdin) == NULL)
-		//	continue;
+
 		n=0;
 		while(n < BUFSIZE){
 			if((read(0, &input[n], 1)) < 1)
@@ -395,9 +386,7 @@ void user_prompt(){
 			if(input[n] == 0x0a || input[n] == 0x00){
 				input[n] = 0x00;
 				break;
-			}//else if(input[n] == 0x20){
-			//	input[n] = 0x00;
-			//}
+			}	
 			n++;
 		}
 
@@ -508,13 +497,11 @@ int main(int argc, char **argv) {
 	if(init_server_connection() == 0){
 		pthread_create(&tid, NULL, recv_request, NULL);
 		user_prompt();
-		//printf("Waiting for thread (%d) to return\n", tid);
-		//pthread_join(tid, NULL);
 	}
 
 	free(session->name);
 	free(session);
-	return 0;
+	exit(0);
 }
 
 
