@@ -106,12 +106,19 @@ struct user{
 	char *hostaddrp;		//dotted decimal host addr str
 };
 
+struct __attribute__((__packed__)) SHMEM_USR_ACTION{
+	uint32_t type_id;
+	char user_name[NAMELEN];
+	struct sockaddr_in clientaddr;
+}shmem_user;
+
 struct channel_MGR{
 	unsigned int size;
 	struct channel **channels;	//commons channel is always array index 0
 };
 
 pthread_t tid;
+pthread_t tid2;
 pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
 struct _REQ_QUEUE * req_Q;
@@ -531,7 +538,27 @@ void test_shmem(){
 	sem_post(this_channel->sem_lock);
 
 	puts("Child unlocked semaphore");
+	sem_unlink(this_channel->name);
+	sem_close(this_channel->sem_lock);
+
 	return;
+}
+
+void *shmem_thread(void *argvp){
+	unsigned int i;
+	struct channel *ch = this_channel;
+
+	puts("shmem_thread started");
+	while(1){
+		memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+		sem_wait(ch->sem_lock);
+		memcpy(&shmem_user, ch->shmem, sizeof(struct SHMEM_USR_ACTION));
+		memset(ch->shmem, 0, sizeof(struct SHMEM_USR_ACTION));
+		sem_post(ch->sem_lock);
+		if(shmem_user.type_id == 1){
+			printf("[*]Pending client login from shmem: %s\n", shmem_user.user_name);
+		}
+	}
 }
 
 void start_channel(int sfd, struct channel *ch){
@@ -544,11 +571,8 @@ void start_channel(int sfd, struct channel *ch){
 	tmp_sockfd = sockfd;
 
 	this_channel = ch;
-	test_shmem();
-	sem_unlink(this_channel->name);
-        sem_close(this_channel->sem_lock);
+	//test_shmem();
 
-	//this_channel = ch;
 	this_channel->num_users = 0;
 	this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
 	if(!this_channel->users)
@@ -562,6 +586,7 @@ void start_channel(int sfd, struct channel *ch){
 		error("ERROR: start_channel() received bad sockfd");
 
 	pthread_create(&tid, NULL, send_requests, NULL);
+	pthread_create(&tid2, NULL, shmem_thread, NULL);
 
 	while(1){
 		msg = accept_input_blk(sockfd);
@@ -581,6 +606,10 @@ void start_channel(int sfd, struct channel *ch){
 		free(msg);	
 	}
 
+	sem_unlink(this_channel->name);
+	sem_close(this_channel->sem_lock);
+	if(this_channel->shmem)
+		munmap(this_channel->shmem, sizeof(struct SHMEM_USR_ACTION)+8);
 	i=0;
 	while(this_channel->users[i]){
 		if(this_channel->users[i]->hostaddrp)
@@ -653,10 +682,10 @@ struct channel *create_channel(char *name, int p){
 	ch->portno = portno;
 	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
 
-	ch->shmem = create_shmem(sizeof(struct user)+8);
+	ch->shmem = create_shmem(sizeof(struct SHMEM_USR_ACTION));
 	if(!ch->shmem)
 		error("ERROR: shmem is NULL");
-	memset(ch->shmem, 0, (sizeof(struct user)+8));
+	memset(ch->shmem, 0, (sizeof(struct SHMEM_USR_ACTION)));
 
 	if(init_channel_sem(ch))
 		if(init_channel_sem(ch))
@@ -677,7 +706,7 @@ struct channel *create_channel(char *name, int p){
 
 }
 
-void new_connection(int sfd, struct channel* ch){
+void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
@@ -691,7 +720,17 @@ void new_connection(int sfd, struct channel* ch){
 	if (hostaddrp == NULL)
 		error("ERROR on inet_ntoa\n");
 
-	printf("[*] SERVER-LOG:  \treceived chat request from %s (%s)\n", hostp->h_name, hostaddrp);
+	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+	shmem_user.type_id = 1;
+	memcpy(shmem_user.user_name, _LOGIN->user_name, NAMELEN);
+	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
+
+	sem_wait(ch->sem_lock);
+	memset(ch->shmem, 0, sizeof(struct SHMEM_USR_ACTION));
+	memcpy(ch->shmem, &shmem_user, sizeof(struct SHMEM_USR_ACTION));
+	sem_post(ch->sem_lock);
+	debug("Login request sent to child");
+	printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
 	
 	n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
 	if (n < 0)
@@ -757,13 +796,13 @@ int main(int argc, char** argv) {
 	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
 
-	struct channel *ch = ch_mgr->channels[0];
+	/*struct channel *ch = ch_mgr->channels[0];
 	sem_wait(ch->sem_lock);
 	printf("Parent read: %s\n", ch->shmem);
 	strncpy(ch->shmem, "Parent was here\n", 17);
 	sem_post(ch->sem_lock);
 	printf("Parent unlocked semaphore\n");
-
+	*/
 	req_size = sizeof(struct _REQ_LOGIN);
 	struct _REQ_LOGIN * _LOGIN = malloc(req_size);
 	if(!_LOGIN)
@@ -777,9 +816,14 @@ int main(int argc, char** argv) {
 		if(n < 0)
 			error("ERROR: recvfrom returned invalid message length");
 
-		if(_LOGIN->type_id == _IN_LOGIN)
-			new_connection(sockfd, ch_mgr->channels[0]);
+		if(_LOGIN->type_id == _IN_LOGIN){
+			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);
+		}
 	}
+
+	//while(ch_mgr->channels[i]){
+		
+	//}
 
 	return 0;
 }
