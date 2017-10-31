@@ -82,8 +82,9 @@ struct session_info{
 char DEFAULT_HOST[] = "127.0.0.1";
 int DEFAULT_PORT = 4444;
 
-int sockfd, portno;
+int sockfd, portno, master_sockfd, master_portno;
 struct sockaddr_in serveraddr;
+struct sockaddr_in master_serveraddr;
 struct hostent *server;
 struct session_info *session;
 char *hostname;
@@ -96,7 +97,6 @@ void error(char *msg) {
 }
 
 void resolve_host() {
-
 	memset((char *)&serveraddr, 0, sizeof(serveraddr));
 
     	/* create the socket */
@@ -332,9 +332,16 @@ void send_request(uint32_t t){
 	
 	int serverlen = sizeof(serveraddr);
 
+	if(type == _IN_LOGOUT)
+		serveraddr.sin_port = htons(master_portno);
+
 	n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
 	if(n < 0)
 		error("ERROR: sendto failed");
+
+	if(type == _IN_LOGOUT)
+		serveraddr.sin_port = htons(portno);
+	
 	return;
 }
 
@@ -425,6 +432,7 @@ int init_server_connection() {
 		puts("ERROR: login failed");
 		return -1;
 	}
+	master_portno = portno;
 	printf("Server requested to use port# %s\n", buf);
 	portno = atoi(buf);
 	serveraddr.sin_port = htons(portno);

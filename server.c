@@ -131,6 +131,7 @@ struct _REQ_QUEUE * req_Q;
 struct _REQ_QUEUE * req_Q_backlog;
 struct AUTHD_CLIENT *client_list;
 struct channel *this_channel;
+struct channel_MGR *ch_mgr;
 struct channel **channel_arr;
 struct sockaddr_in **connected_clients;
 struct sockaddr_in clientaddr;
@@ -142,6 +143,8 @@ unsigned int SHMEM_STCK_SIZE;
 
 pid_t pid;
 char logging_msg[128];
+
+void shmem_enqueue(struct channel *ch);
 
 void error(char *msg){
 	perror(msg);
@@ -218,12 +221,14 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 		return NULL;
 
 	client = client_list;
-	while(client->prev){
+	puts("In client_lookup");
+	while(client){
 		n = strlen(addr);
 		if(!strncmp(client->user_s->hostaddrp, addr, n)){
 			if(!uname)
 				return client;
-			if(!memcmp(client->user_s->uname, uname, NAMELEN))
+		}
+		if(!memcmp(client->user_s->uname, uname, NAMELEN)){
 				return client;
 		}
 		client = client->prev;
@@ -304,6 +309,12 @@ int client_logout(struct AUTHD_CLIENT *client){
                         puts("Logout ack failed to send");
                 snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->user_s->uname, client->user_s->hostaddrp);
                 server_log(logging_msg);
+
+		shmem_user.type_id = _IN_LEAVE;
+		memcpy(shmem_user.user_name, client->user_s->uname, NAMELEN);
+		memcpy(&shmem_user.clientaddr, &client->user_s->clientaddr, sizeof(struct sockaddr));
+		//FIX hardcoded channel
+		shmem_enqueue(ch_mgr->channels[0]);
 
 		free(client->user_s);
 		free(client);
@@ -536,9 +547,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 		memcpy(msg, &req->data[4], NAMELEN);
 		if((client_lookup(req->hostaddrp, msg)) == NULL){
-			//pthread_mutex_lock(&lock2);
-                	client_login(req, msg);
-			//pthread_mutex_unlock(&lock2);
+                	client_login(req, msg);	
 		}else{
 			debug("Login request received from already authenticated user");
 		}
@@ -555,13 +564,10 @@ uint32_t handle_request(struct _REQ_NEW * req){
 			server_log("Logout request has invalid size");
 			return(_IN_ERROR + _IN_LOGOUT);
 		}
-
 		struct AUTHD_CLIENT *client;
 		client = client_lookup(req->hostaddrp, NULL);
 		if(client){
-			//pthread_mutex_lock(&lock2);
 			client_logout(client);
-			//pthread_mutex_unlock(&lock2);
 		}else{
 			server_log("Received logout request from non-authenticated user");
 			return(_IN_ERROR + _IN_LOGOUT);
@@ -867,7 +873,7 @@ int main(int argc, char** argv) {
 	uint32_t msg_type;
 	int sockfd, portno, debug_portno, optval, n, req_size;
 	struct sockaddr_in serveraddr;
-	struct channel_MGR *ch_mgr;
+	//struct channel_MGR *ch_mgr;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
