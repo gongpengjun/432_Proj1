@@ -106,6 +106,12 @@ struct user{
 	char *hostaddrp;		//dotted decimal host addr str
 };
 
+struct AUTHD_CLIENT{
+	struct user* user_s;
+	struct AUTHD_CLIENT* prev;
+	struct AUTHD_CLIENT* next;
+};
+
 struct __attribute__((__packed__)) SHMEM_USR_ACTION{
 	uint32_t type_id;
 	char user_name[NAMELEN];
@@ -123,6 +129,7 @@ pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
 struct _REQ_QUEUE * req_Q;
 struct _REQ_QUEUE * req_Q_backlog;
+struct AUTHD_CLIENT *client_list;
 struct channel *this_channel;
 struct channel **channel_arr;
 struct sockaddr_in **connected_clients;
@@ -203,6 +210,27 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 	return hostaddrp_copy;
 }
 
+struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
+	struct AUTHD_CLIENT *client;
+	int n;
+
+	if(!client_list)
+		return NULL;
+
+	client = client_list;
+	while(client->prev){
+		n = strlen(addr);
+		if(!strncmp(client->user_s->hostaddrp, addr, n)){
+			if(!uname)
+				return client;
+			if(!memcmp(client->user_s->uname, uname, NAMELEN))
+				return client;
+		}
+		client = client->prev;
+	}
+	return NULL;
+}
+
 int user_lookup(char *addr, char *uname, struct channel *ch){
 	/*
 	* Returns index of user struct * if addr is found
@@ -259,58 +287,62 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 	return msg;
 }
 
-int client_logout(int index, struct channel *this_channel){
-	int i = index;
+int client_logout(struct AUTHD_CLIENT *client){
 	int n;
-	struct user *client;
-
-	client = this_channel->users[i];
 	if(client){
-		n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->clientaddr, sizeof(clientaddr));
-		if(n < 1)
-			puts("Logout ack failed to send");
-		snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->uname, client->hostaddrp);
-		server_log(logging_msg);
+		if(client->prev && client->next){
+			client->next->prev = client->prev;
+			client->prev->next = client->next;
+		}else if(client->next){
+			client->next->prev = NULL;
+		}else if(client->prev){
+			client->prev->next = NULL;
+		}
+
+		n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->user_s->clientaddr, sizeof(struct sockaddr));
+                if(n < 1)
+                        puts("Logout ack failed to send");
+                snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->user_s->uname, client->user_s->hostaddrp);
+                server_log(logging_msg);
+
+		free(client->user_s);
 		free(client);
+		return 0;
 	}
-
-	while(i < this_channel->num_users){
-		this_channel->users[i] = this_channel->users[i+1];
-		i++;
-	}
-
-	if(this_channel->num_users > 0)
-		this_channel->num_users--;
-
-	return 0;
+	return -1;
 }
 
-int client_login(struct _REQ_NEW *req, char *uname, struct channel *this_channel){
-	/*
-	* Create and fill new user struct and add it to the channel users list 
-	*/
+int client_login(struct _REQ_NEW *req, char *uname){
 	int n;
 	struct user *new_user;
+	struct AUTHD_CLIENT *client;
 
-	/*Allocate user struct for new client*/
-	this_channel->users[this_channel->num_users] = malloc(sizeof(struct user));
-	if(!this_channel->users[this_channel->num_users])
-		error("ERROR: start_channel() failed to malloc space for new user");
-
-	new_user = this_channel->users[this_channel->num_users];
-	this_channel->num_users++;
-
-	memset(new_user, 0, sizeof(struct user));
-
-	memcpy(&new_user->uname, uname, NAMELEN);
-	memcpy(&new_user->clientaddr, &req->clientaddr, req->clientlen);
-	if(req->hostaddrp == NULL){
-		debug("received request with NULL hostaddrp");
+	if(!(new_user = malloc(sizeof(struct user)))){
+		debug("client login failed to allocate space for new_user");
 		return -1;
 	}
-	new_user->hostaddrp = req->hostaddrp;
+
+	if(!(client = malloc(sizeof(struct AUTHD_CLIENT)))){
+		debug("client login failed to allocate new client struct");
+		return -1;
+	}
+
+	memset(new_user, 0, sizeof(struct user));
+	memset(client, 0, sizeof(struct AUTHD_CLIENT));
+        memcpy(&new_user->clientaddr, &req->clientaddr, sizeof(struct sockaddr));
+        new_user->hostaddrp = resolve_client(&new_user->clientaddr);
+        memcpy(new_user->uname, uname, NAMELEN);
+
+	if(client_list){
+		client->prev = client_list;
+		client->next = NULL;
+		client_list->next = client;
+	}
+
+	client->user_s = new_user;
+	client_list = client;
 	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
-	server_log(logging_msg);
+        server_log(logging_msg);
 
 	return 0;
 }
@@ -476,7 +508,7 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	return;
 }
 
-uint32_t handle_request(struct _REQ_NEW * req, struct channel *this_channel){
+uint32_t handle_request(struct _REQ_NEW * req){
 	/**/
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
@@ -503,9 +535,9 @@ uint32_t handle_request(struct _REQ_NEW * req, struct channel *this_channel){
 		}
 
 		memcpy(msg, &req->data[4], NAMELEN);
-		if(user_lookup(req->hostaddrp, msg, this_channel) < 0){
+		if((client_lookup(req->hostaddrp, msg)) == NULL){
 			//pthread_mutex_lock(&lock2);
-                	client_login(req, msg, this_channel);
+                	client_login(req, msg);
 			//pthread_mutex_unlock(&lock2);
 		}else{
 			debug("Login request received from already authenticated user");
@@ -524,10 +556,11 @@ uint32_t handle_request(struct _REQ_NEW * req, struct channel *this_channel){
 			return(_IN_ERROR + _IN_LOGOUT);
 		}
 
-		n = user_lookup(req->hostaddrp, NULL, this_channel);
-		if(n != -1){
+		struct AUTHD_CLIENT *client;
+		client = client_lookup(req->hostaddrp, NULL);
+		if(client){
 			//pthread_mutex_lock(&lock2);
-			client_logout(n, this_channel);
+			client_logout(client);
 			//pthread_mutex_unlock(&lock2);
 		}else{
 			server_log("Received logout request from non-authenticated user");
@@ -551,25 +584,7 @@ uint32_t handle_request(struct _REQ_NEW * req, struct channel *this_channel){
 		return _IN_LEAVE;
 
 	}else if(type_id == _IN_SAY){
-		server_log("Type: Say");
-		if(req->size != MSGSIZE){
-			server_log("Say request has invalid size");
-			return(_IN_ERROR + _IN_SAY);
-		}
-
-		if(strncmp(&req->data[sizeof(uint32_t)], this_channel->name, strlen(this_channel->name))){
-			server_log("Say request sent to wrong channel");
-			return(_IN_ERROR + _IN_SAY);
-		}
-
-		n = user_lookup(req->hostaddrp, NULL, this_channel);
-		if(n < 0){
-			server_log("received Say request from non-authenticated user");
-			return(_IN_ERROR + _IN_SAY);
-		}
-
-		queue_say_request(req, n);	
-		
+		server_log("Master Received Type: Say");
 		return _IN_SAY;
 
 	}else if(type_id == _IN_LIST){
@@ -598,7 +613,6 @@ void *shmem_dequeue(void *argvp){
 	struct channel *ch = this_channel;
 	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)];
 	
-//	puts("shmem_thread started");
 	while(1){	
 		sem_wait(ch->sem_lock);
 		memcpy(&size, ch->shmem, sizeof(size));
@@ -651,8 +665,29 @@ void start_channel(int sfd, struct channel *ch){
 	pthread_create(&tid2, NULL, shmem_dequeue, NULL);
 
 	while(1){
-		msg = accept_input_blk(sockfd);
-		msg_type = handle_request(msg, this_channel);
+		msg = accept_input_blk(sockfd);	
+		memcpy(&msg_type, msg->data, sizeof(uint32_t));
+
+		if(msg_type == _IN_SAY){
+			server_log("Type: Say");
+			if(msg->size != MSGSIZE){
+				server_log("Say request has invalid size");
+				continue;
+			}
+			if(strncmp(&msg->data[sizeof(uint32_t)], this_channel->name, strlen(this_channel->name))){
+				server_log("Say request sent to wrong channel");
+				continue;
+			}else{
+
+				n = user_lookup(msg->hostaddrp, NULL, this_channel);
+				if(n < 0){
+					server_log("received Say request from non-authenticated user");
+					continue;
+				}
+			queue_say_request(msg, n);
+			}
+		}
+
 		if(msg_type == _IN_ERROR || msg_type == (msg_type + _IN_ERROR)){
 			debug("Server received invalid request");
 			free(msg);
@@ -776,8 +811,6 @@ void shmem_enqueue(struct channel *ch){
 
 	sem_wait(ch->sem_lock);
 	memcpy(&size, ch->shmem, sizeof(size));
-	//snprintf(logging_msg, 128, "Number of objects enqueued in shmem: %u", size);
-	//server_log(logging_msg);
 
 	if(size >= SHMEM_STCK_SIZE){
 		server_log("shmem stack is full. Signal child to clean it up");
@@ -830,7 +863,7 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 }
 
 int main(int argc, char** argv) {
-	//char *msg;
+	struct _REQ_NEW *msg;
 	uint32_t msg_type;
 	int sockfd, portno, debug_portno, optval, n, req_size;
 	struct sockaddr_in serveraddr;
@@ -883,51 +916,21 @@ int main(int argc, char** argv) {
 	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
 
-	struct _REQ_NEW *msg;
-	//uint32_t msg_type;
-	this_channel = ch_mgr->channels[0];
-        this_channel->num_users = 0;
-        this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
-        if(!this_channel->users)
-                error("ERROR: start_channel() failed to malloc space for users");
-	int i;
-        for(i=0; i<MAXCLIENTNUM; i++){
-                this_channel->users[i] = NULL;
-        }
-
 	req_size = sizeof(struct _REQ_LOGIN);
         struct _REQ_LOGIN * _LOGIN = malloc(req_size);
-
+	tmp_sockfd = sockfd;
+	client_list = NULL;
 	while(1){
 		msg = accept_input_blk(sockfd);
-		msg_type = handle_request(msg, this_channel);
+		msg_type = handle_request(msg);
 
 		if(msg_type == _IN_LOGIN){
 			memcpy(_LOGIN, msg->data, req_size);
-			new_connection(sockfd, this_channel, _LOGIN);
+			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);
 		}
 		free(msg);
 	}
 
-/*
-	req_size = sizeof(struct _REQ_LOGIN);
-	struct _REQ_LOGIN * _LOGIN = malloc(req_size);
-	if(!_LOGIN)
-		error("ERROR: main failed to allocate space for _LOGIN struct");
-
-	while(1) {
-		memset(_LOGIN, 0, req_size);
-		memset(&clientaddr, 0, sizeof(clientaddr));
-
-		n = recvfrom(sockfd, _LOGIN, req_size, 0, (struct sockaddr *)&clientaddr, &clientlen);
-		if(n < 0)
-			error("ERROR: recvfrom returned invalid message length");
-
-		if(_LOGIN->type_id == _IN_LOGIN){
-			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);		
-		}
-	}
-*/
 	//while(ch_mgr->channels[i]){
 		
 	//}
