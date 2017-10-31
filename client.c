@@ -429,8 +429,8 @@ int init_server_connection() {
 	portno = atoi(buf);
 	serveraddr.sin_port = htons(portno);
 
-	build_request(_IN_LOGIN, 0, NULL);
-	send_request(_IN_LOGIN);
+	//build_request(_IN_LOGIN, 0, NULL);
+	//send_request(_IN_LOGIN);
 
 	return 0;
 }

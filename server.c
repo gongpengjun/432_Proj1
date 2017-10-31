@@ -203,15 +203,15 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 	return hostaddrp_copy;
 }
 
-int user_lookup(char *addr, char *uname){
+int user_lookup(char *addr, char *uname, struct channel *ch){
 	/*
 	* Returns index of user struct * if addr is found
 	* returns -1 if user is not found
 	*/
 	int i;
 	size_t n;
-	struct channel *ch = this_channel;
-
+	//struct channel *ch = this_channel;
+	
 	if(ch->num_users < 1)
 		return -1;
 
@@ -249,6 +249,8 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 	if(msg->size < 0)
 		error("ERROR: recvfrom returned invalid message length");
 
+	memcpy(&clientaddr, &msg->clientaddr, msg->clientlen);
+	clientlen = msg->clientlen;
 	/*Resolve ip addr of client and check if ip exists in connected users*/
 	msg->hostaddrp = resolve_client(&msg->clientaddr);
 	snprintf(logging_msg, 128, "resolved client address: %s", msg->hostaddrp);
@@ -257,7 +259,7 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 	return msg;
 }
 
-int client_logout(int index){
+int client_logout(int index, struct channel *this_channel){
 	int i = index;
 	int n;
 	struct user *client;
@@ -283,7 +285,7 @@ int client_logout(int index){
 	return 0;
 }
 
-int client_login(struct _REQ_NEW *req, char *uname){
+int client_login(struct _REQ_NEW *req, char *uname, struct channel *this_channel){
 	/*
 	* Create and fill new user struct and add it to the channel users list 
 	*/
@@ -313,7 +315,68 @@ int client_login(struct _REQ_NEW *req, char *uname){
 	return 0;
 }
 
+void leave_channel(struct SHMEM_USR_ACTION *req){
+	struct user * old_user;
+	char *hostaddrp;
+	char uname[NAMELEN];
+	int index, i;
+	struct channel * ch = this_channel;
 
+	memset(uname, 0, NAMELEN);
+	memcpy(uname, req->user_name, NAMELEN);
+	hostaddrp = resolve_client(&req->clientaddr);
+
+	pthread_mutex_lock(&lock2);
+	index = user_lookup(hostaddrp, uname, ch);
+	if(index == -1){	
+		server_log("User has not joined or has already left this channel");
+		free(hostaddrp);
+	}else if(index < ch->num_users){
+		if(ch->users[index])
+			free(ch->users[index]);
+		i = 0;
+		while(i < this_channel->num_users){
+                	this_channel->users[i] = this_channel->users[i+1];
+                	i++;
+        	}
+
+        	if(this_channel->num_users > 0)
+                	this_channel->num_users--;
+
+		free(hostaddrp);
+		server_log("Client has successfully left the channel");
+	}
+	pthread_mutex_lock(&lock2);
+	return;
+}
+
+void join_channel(struct SHMEM_USR_ACTION *req){
+	struct user * new_user;
+	struct channel * ch = this_channel;
+
+	new_user = malloc(sizeof(struct user));
+	if(!new_user)
+		error("ERROR: join_channel: ");
+	memset(new_user, 0, sizeof(struct user));
+
+	memcpy(&new_user->clientaddr, &req->clientaddr, sizeof(struct sockaddr));
+	new_user->hostaddrp = resolve_client(&new_user->clientaddr);
+	memcpy(new_user->uname, req->user_name, NAMELEN);
+	if((user_lookup(new_user->hostaddrp, new_user->uname, ch)) != -1){
+		server_log("User has already joined this channel");
+		free(new_user->hostaddrp);
+		free(new_user);
+		return;
+	}
+	pthread_mutex_lock(&lock2);
+	ch->users[ch->num_users] = new_user;
+	ch->num_users++;
+	pthread_mutex_unlock(&lock2);
+	snprintf(logging_msg, 128, "User: %s has joined the channel.", new_user->uname);
+	server_log(logging_msg);
+
+	return;
+}
 
 void handle_backlog(){
 	int i;
@@ -413,7 +476,7 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	return;
 }
 
-uint32_t handle_request(struct _REQ_NEW * req){
+uint32_t handle_request(struct _REQ_NEW * req, struct channel *this_channel){
 	/**/
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
@@ -440,10 +503,10 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		}
 
 		memcpy(msg, &req->data[4], NAMELEN);
-		if(user_lookup(req->hostaddrp, msg) < 0){
-			pthread_mutex_lock(&lock2);
-                	client_login(req, msg);
-			pthread_mutex_unlock(&lock2);
+		if(user_lookup(req->hostaddrp, msg, this_channel) < 0){
+			//pthread_mutex_lock(&lock2);
+                	client_login(req, msg, this_channel);
+			//pthread_mutex_unlock(&lock2);
 		}else{
 			debug("Login request received from already authenticated user");
 		}
@@ -461,11 +524,11 @@ uint32_t handle_request(struct _REQ_NEW * req){
 			return(_IN_ERROR + _IN_LOGOUT);
 		}
 
-		n = user_lookup(req->hostaddrp, NULL);
+		n = user_lookup(req->hostaddrp, NULL, this_channel);
 		if(n != -1){
-			pthread_mutex_lock(&lock2);
-			client_logout(n);
-			pthread_mutex_unlock(&lock2);
+			//pthread_mutex_lock(&lock2);
+			client_logout(n, this_channel);
+			//pthread_mutex_unlock(&lock2);
 		}else{
 			server_log("Received logout request from non-authenticated user");
 			return(_IN_ERROR + _IN_LOGOUT);
@@ -484,7 +547,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_LEAVE){
                 server_log("Type: Leave");
-		server_log("client requested to kill channel connection");
+		server_log("client requested to leave channel");
 		return _IN_LEAVE;
 
 	}else if(type_id == _IN_SAY){
@@ -499,7 +562,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 			return(_IN_ERROR + _IN_SAY);
 		}
 
-		n = user_lookup(req->hostaddrp, NULL);
+		n = user_lookup(req->hostaddrp, NULL, this_channel);
 		if(n < 0){
 			server_log("received Say request from non-authenticated user");
 			return(_IN_ERROR + _IN_SAY);
@@ -552,7 +615,11 @@ void *shmem_dequeue(void *argvp){
 			memset(&shmem_user, 0, SHMEM_USER_SIZE);
 			memcpy(&shmem_user, req_buf+offset, SHMEM_USER_SIZE);
 			printf("[*]Shmem_user: type_id: %u\t user_name: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, offset);
-			resolve_client(shmem_user.clientaddr);
+			if(shmem_user.type_id == _IN_JOIN){
+				join_channel(&shmem_user);
+			}else if(shmem_user.type_id == _IN_LEAVE){
+				leave_channel(&shmem_user);
+			}
 			//Handle request
 			offset+=SHMEM_USER_SIZE;
 		}
@@ -585,7 +652,7 @@ void start_channel(int sfd, struct channel *ch){
 
 	while(1){
 		msg = accept_input_blk(sockfd);
-		msg_type = handle_request(msg);
+		msg_type = handle_request(msg, this_channel);
 		if(msg_type == _IN_ERROR || msg_type == (msg_type + _IN_ERROR)){
 			debug("Server received invalid request");
 			free(msg);
@@ -742,12 +809,12 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 		error("ERROR on inet_ntoa\n");
 
 	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
-	shmem_user.type_id = 1;
+	shmem_user.type_id = _IN_JOIN;
 	memcpy(shmem_user.user_name, _LOGIN->user_name, NAMELEN);
 	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
 
 	shmem_enqueue(ch);
-	debug("Login request sent to child");
+	debug("Join request sent to child");
 	printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
 	
 	n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
@@ -763,7 +830,7 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 }
 
 int main(int argc, char** argv) {
-	char *msg;
+	//char *msg;
 	uint32_t msg_type;
 	int sockfd, portno, debug_portno, optval, n, req_size;
 	struct sockaddr_in serveraddr;
@@ -816,6 +883,33 @@ int main(int argc, char** argv) {
 	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
 
+	struct _REQ_NEW *msg;
+	//uint32_t msg_type;
+	this_channel = ch_mgr->channels[0];
+        this_channel->num_users = 0;
+        this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
+        if(!this_channel->users)
+                error("ERROR: start_channel() failed to malloc space for users");
+	int i;
+        for(i=0; i<MAXCLIENTNUM; i++){
+                this_channel->users[i] = NULL;
+        }
+
+	req_size = sizeof(struct _REQ_LOGIN);
+        struct _REQ_LOGIN * _LOGIN = malloc(req_size);
+
+	while(1){
+		msg = accept_input_blk(sockfd);
+		msg_type = handle_request(msg, this_channel);
+
+		if(msg_type == _IN_LOGIN){
+			memcpy(_LOGIN, msg->data, req_size);
+			new_connection(sockfd, this_channel, _LOGIN);
+		}
+		free(msg);
+	}
+
+/*
 	req_size = sizeof(struct _REQ_LOGIN);
 	struct _REQ_LOGIN * _LOGIN = malloc(req_size);
 	if(!_LOGIN)
@@ -830,10 +924,10 @@ int main(int argc, char** argv) {
 			error("ERROR: recvfrom returned invalid message length");
 
 		if(_LOGIN->type_id == _IN_LOGIN){
-			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);
+			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);		
 		}
 	}
-
+*/
 	//while(ch_mgr->channels[i]){
 		
 	//}
