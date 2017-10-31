@@ -130,6 +130,8 @@ struct sockaddr_in clientaddr;
 char *hostaddrp;
 int clientlen;
 int tmp_sockfd;
+unsigned int SHMEM_USER_SIZE;
+unsigned int SHMEM_STCK_SIZE;
 
 pid_t pid;
 char logging_msg[128];
@@ -310,6 +312,8 @@ int client_login(struct _REQ_NEW *req, char *uname){
 
 	return 0;
 }
+
+
 
 void handle_backlog(){
 	int i;
@@ -524,39 +528,33 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	return _IN_ERROR;
 }
 
-void test_shmem(){
-	unsigned int i;
-	char str1[]="Child accessed shmem\n";
-
-	puts("[*] Testing Shmem");
-	i = sem_getvalue(this_channel->sem_lock, &this_channel->sem_value);
-	printf("sem_lock value: %u\n", i);
-
-	sem_wait(this_channel->sem_lock);
-	printf("Child read: %s\n", this_channel->shmem);
-	strncpy(this_channel->shmem, str1, strlen(str1));
-	sem_post(this_channel->sem_lock);
-
-	puts("Child unlocked semaphore");
-	sem_unlink(this_channel->name);
-	sem_close(this_channel->sem_lock);
-
-	return;
-}
-
-void *shmem_thread(void *argvp){
-	unsigned int i;
+void *shmem_dequeue(void *argvp){
+	unsigned int offset=0;
+	unsigned int size=0;
+	int i;
 	struct channel *ch = this_channel;
-
-	puts("shmem_thread started");
-	while(1){
-		memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)];
+	
+//	puts("shmem_thread started");
+	while(1){	
 		sem_wait(ch->sem_lock);
-		memcpy(&shmem_user, ch->shmem, sizeof(struct SHMEM_USR_ACTION));
-		memset(ch->shmem, 0, sizeof(struct SHMEM_USR_ACTION));
+		memcpy(&size, ch->shmem, sizeof(size));
+		if(size > 0){
+			puts("Copying shmem");
+			memset(req_buf, 0, (SHMEM_USER_SIZE*SHMEM_STCK_SIZE));
+			memcpy(req_buf, (ch->shmem)+sizeof(size), (SHMEM_USER_SIZE*size));
+			memset(ch->shmem, 0, (SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+sizeof(size));
+		}
 		sem_post(ch->sem_lock);
-		if(shmem_user.type_id == 1){
-			printf("[*]Pending client login from shmem: %s\n", shmem_user.user_name);
+
+		offset=0;
+		for(i=0; i<size; i++){
+			memset(&shmem_user, 0, SHMEM_USER_SIZE);
+			memcpy(&shmem_user, req_buf+offset, SHMEM_USER_SIZE);
+			printf("[*]Shmem_user: type_id: %u\t user_name: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, offset);
+			resolve_client(shmem_user.clientaddr);
+			//Handle request
+			offset+=SHMEM_USER_SIZE;
 		}
 	}
 }
@@ -569,10 +567,7 @@ void start_channel(int sfd, struct channel *ch){
 	int i, n;
 
 	tmp_sockfd = sockfd;
-
 	this_channel = ch;
-	//test_shmem();
-
 	this_channel->num_users = 0;
 	this_channel->users = malloc(MAXCLIENTNUM * sizeof(struct user*));
 	if(!this_channel->users)
@@ -586,7 +581,7 @@ void start_channel(int sfd, struct channel *ch){
 		error("ERROR: start_channel() received bad sockfd");
 
 	pthread_create(&tid, NULL, send_requests, NULL);
-	pthread_create(&tid2, NULL, shmem_thread, NULL);
+	pthread_create(&tid2, NULL, shmem_dequeue, NULL);
 
 	while(1){
 		msg = accept_input_blk(sockfd);
@@ -630,14 +625,16 @@ void start_channel(int sfd, struct channel *ch){
 void *create_shmem(size_t size){
 	int prot = PROT_READ | PROT_WRITE;
 	int vis = MAP_ANONYMOUS | MAP_SHARED;
+	void *mem;
 
-	return mmap(NULL, size, prot, vis, 0, 0);
+	mem = mmap(NULL, size, prot, vis, 0, 0);
+	if(mem)
+		memset(mem, 0, size);
+
+	return mem;
 }
 
 int init_channel_sem(struct channel *ch){
-	sem_t *sem_lock;	
-
-	//sem_lock = &ch->sem_lock;
 	ch->sem_value = 1;
 
 	if(!(ch->sem_lock = sem_open(ch->name, O_CREAT | O_EXCL, 0644, ch->sem_value))){
@@ -646,8 +643,8 @@ int init_channel_sem(struct channel *ch){
 		sem_close(ch->sem_lock);
 		return 1;
 	}
-	//memcpy(&ch->sem_lock, &sem_lock, sizeof(sem_t));
-	puts("Semaphore initialized");
+
+	server_log("Semaphore initialized");
 	return 0;
 }
 
@@ -682,10 +679,9 @@ struct channel *create_channel(char *name, int p){
 	ch->portno = portno;
 	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
 
-	ch->shmem = create_shmem(sizeof(struct SHMEM_USR_ACTION));
+	ch->shmem = create_shmem((SHMEM_USER_SIZE * SHMEM_STCK_SIZE)+4);
 	if(!ch->shmem)
 		error("ERROR: shmem is NULL");
-	memset(ch->shmem, 0, (sizeof(struct SHMEM_USR_ACTION)));
 
 	if(init_channel_sem(ch))
 		if(init_channel_sem(ch))
@@ -704,6 +700,31 @@ struct channel *create_channel(char *name, int p){
 		return ch;
 	}
 
+}
+
+void shmem_enqueue(struct channel *ch){
+	unsigned int offset=0;
+	unsigned int size=0;
+	int i;
+
+	sem_wait(ch->sem_lock);
+	memcpy(&size, ch->shmem, sizeof(size));
+	//snprintf(logging_msg, 128, "Number of objects enqueued in shmem: %u", size);
+	//server_log(logging_msg);
+
+	if(size >= SHMEM_STCK_SIZE){
+		server_log("shmem stack is full. Signal child to clean it up");
+	}else{
+		offset = (size * SHMEM_USER_SIZE) + sizeof(size);
+		size++;
+		memcpy((ch->shmem)+sizeof(size), &shmem_user, SHMEM_USER_SIZE);
+		memcpy(ch->shmem, &size, sizeof(size));
+		offset=4;
+	}
+
+	sem_post(ch->sem_lock);
+
+	return;
 }
 
 void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
@@ -725,10 +746,7 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 	memcpy(shmem_user.user_name, _LOGIN->user_name, NAMELEN);
 	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
 
-	sem_wait(ch->sem_lock);
-	memset(ch->shmem, 0, sizeof(struct SHMEM_USR_ACTION));
-	memcpy(ch->shmem, &shmem_user, sizeof(struct SHMEM_USR_ACTION));
-	sem_post(ch->sem_lock);
+	shmem_enqueue(ch);
 	debug("Login request sent to child");
 	printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
 	
@@ -786,6 +804,8 @@ int main(int argc, char** argv) {
 	memset(req_Q_backlog, 0, sizeof(struct _REQ_QUEUE));
 	req_Q->size = 0;
 	req_Q_backlog->size = 0;
+	SHMEM_USER_SIZE = sizeof(struct SHMEM_USR_ACTION);
+        SHMEM_STCK_SIZE = 16;
 
 	/*
 	*Initialize Channel Manager struct and create Commons channel
@@ -796,13 +816,6 @@ int main(int argc, char** argv) {
 	ch_mgr->channels[0] = create_channel("Commons", debug_portno);
 	ch_mgr->size++;
 
-	/*struct channel *ch = ch_mgr->channels[0];
-	sem_wait(ch->sem_lock);
-	printf("Parent read: %s\n", ch->shmem);
-	strncpy(ch->shmem, "Parent was here\n", 17);
-	sem_post(ch->sem_lock);
-	printf("Parent unlocked semaphore\n");
-	*/
 	req_size = sizeof(struct _REQ_LOGIN);
 	struct _REQ_LOGIN * _LOGIN = malloc(req_size);
 	if(!_LOGIN)
