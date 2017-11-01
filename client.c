@@ -31,6 +31,7 @@ const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
 void switch_channel(char *name);
+struct channel *join_channel(char *name);
 void send_master_request(uint32_t t);
 void send_channel_request(uint32_t t);
 
@@ -100,6 +101,12 @@ struct channel{
 	int portno;
 };
 
+struct _PENDING_CHANNEL{
+	struct channel *ch;
+	struct _PENDING_CHANNEL *next;
+	struct _PENDING_CHANNEL *prev;
+};
+
 char DEFAULT_HOST[] = "127.0.0.1";
 int DEFAULT_PORT = 4444;
 
@@ -109,6 +116,7 @@ int serverlen;
 //struct sockaddr_in master_serveraddr;
 //struct hostent *server;
 struct session_info *session;
+//struct channel *pending_channels[128];
 //char *hostname;
 
 pthread_t tid;
@@ -131,7 +139,6 @@ void resolve_host(char *hostname, int portno) {
 	}
 
 	master = session->_master;
-	//memset(&master->serveraddr, 0, sizeof(struct sockaddr_in));
 
     	/* create the socket */
 	master->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -308,6 +315,8 @@ void resolve_cmd(char * input){
 		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN){
 			puts("ERROR: build_request failed");
 			return;
+		}else if(!(join_channel(_JOIN.channel_name))){
+			return;
 		}
 		send_master_request(_IN_JOIN);
 
@@ -335,7 +344,7 @@ void resolve_cmd(char * input){
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
 		//printf("Sure sure, switching to channel: %s\n", argv[1]);
-		switch_channel("chan1");
+		switch_channel(argv[1]);
 
 	}else{
 		printf("Command '%s' not recognized.\n", argv[0]);
@@ -350,26 +359,65 @@ void resolve_cmd(char * input){
 	return;
 }
 
-void switch_channel(char *name){
+struct channel *search_channels(char *name){
 	int i;
 	struct channel *ch;
 
 	for(i=0; i < session->num_channels; i++){
 		ch = session->channels[i];
-		if(!strncmp(ch->name, name, NAMELEN)){
-			session->_active_channel = ch;
-			if(ch->portno > 0){
-				session->_active_channel->serveraddr.sin_port = htons(ch->portno);
-			}else{
-				printf("[*] DEBUG: switch_channel has invalid port number from requested channel\n");
-			}
-			return;
-		}
+		if(!strncmp(ch->name, name, NAMELEN))
+			return ch;
+	}
+	return NULL;
+}
+
+void switch_channel(char *name){
+	struct channel *ch;
+
+	ch = search_channels(name);
+	if(!ch){
+		printf("[*] DEBUG: channel %s not found.\n", name);
+		return;
 	}
 
-	printf("DEBUG: channel not found: %s\n", name);
+	session->_active_channel = ch;
+	if(ch->portno > 0){
+		session->_active_channel->serveraddr.sin_port = htons(ch->portno);
+	}else{
+		printf("[*] DEBUG: switch_channel has invalid port number from requested channel\n");
+	}
 
 	return;
+}
+
+struct channel *join_channel(char *name){
+	struct channel *new_ch;
+	int n;
+
+	n = strlen(name);
+	if(n < 1 || n > NAMELEN){
+		printf("[*] DEBUG: join_channel received invalid channel name\n");
+		return NULL;
+	}
+	if(search_channels(name)){
+		printf("[*] CLIENT-LOG: already subscribed to channel %s\n", name);
+		return NULL;
+	}
+
+	new_ch = malloc(sizeof(struct channel));
+	memset(new_ch, 0, sizeof(struct channel));
+	memcpy(new_ch->name, name, NAMELEN);
+
+	/*Init new channel to serveraddr and portno of master*/
+	memcpy(&new_ch->serveraddr, &session->_master->serveraddr, sizeof(struct sockaddr_in));
+	new_ch->portno = session->_master->portno;
+
+	session->channels[session->num_channels] = new_ch;
+	session->num_channels++;
+	session->_active_channel = new_ch;
+	//Add channel to pending channels
+
+	return new_ch;
 }
 
 void send_master_request(uint32_t t){
@@ -392,7 +440,6 @@ void send_master_request(uint32_t t){
 	memcpy(out_buf, _REQ_ARRAY[type_id], size);
 	master = session->_master;
 	/*Set portno to master portno*/
-	//serveraddr.sin_port = htons(master_portno);
 
 	n = sendto(master->sockfd, out_buf, size, 0, (struct sockaddr *)&master->serveraddr, sizeof(struct sockaddr_in));
 	if(n < 0)
