@@ -31,7 +31,8 @@ const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
 void switch_channel(char *name);
-void send_request(uint32_t t);
+void send_master_request(uint32_t t);
+void send_channel_request(uint32_t t);
 
 struct __attribute__((__packed__)) _REQ_LOGIN{
 	uint32_t type_id;
@@ -77,27 +78,38 @@ unsigned int _REQ_SIZES[8];
 
 struct session_info{
 	char *name;
-	char active_channel[NAMELEN+4];
+	//char active_channel[NAMELEN+4];
+	struct _MASTER_INFO *_master;
+	//struct hostent *server;
 	struct channel *channels[1024];
 	struct channel *_active_channel;
 	int num_channels;
 };
 
+struct _MASTER_INFO{
+	struct sockaddr_in serveraddr;
+	struct hostent *server;
+	int portno;
+	int sockfd;
+};
+
 struct channel{
 	char name[NAMELEN+4];
-	int sockfd;
+	struct sockaddr_in serveraddr;
+	//int sockfd;
 	int portno;
 };
 
 char DEFAULT_HOST[] = "127.0.0.1";
 int DEFAULT_PORT = 4444;
 
-int sockfd, portno, master_sockfd, master_portno;
-struct sockaddr_in serveraddr;
-struct sockaddr_in master_serveraddr;
-struct hostent *server;
+//int sockfd, portno, master_sockfd, master_portno;
+int serverlen;
+//struct sockaddr_in serveraddr;
+//struct sockaddr_in master_serveraddr;
+//struct hostent *server;
 struct session_info *session;
-char *hostname;
+//char *hostname;
 
 pthread_t tid;
 
@@ -106,24 +118,37 @@ void error(char *msg) {
 	exit(0);
 }
 
-void resolve_host() {
-	memset((char *)&serveraddr, 0, sizeof(serveraddr));
+void resolve_host(char *hostname, int portno) {
+	struct _MASTER_INFO *master;
+
+	if(session->_master == NULL){
+		session->_master = malloc(sizeof(struct _MASTER_INFO));
+		if(!session->_master)
+			error("ERROR: session master failed to init.");
+		memset(session->_master, 0, sizeof(struct _MASTER_INFO));
+	}else{
+		printf("[*] DEBUG: session master channel was not NULL\n");
+	}
+
+	master = session->_master;
+	//memset(&master->serveraddr, 0, sizeof(struct sockaddr_in));
 
     	/* create the socket */
-	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sockfd < 0) 
+	master->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (master->sockfd < 0) 
 		error("ERROR opening socket");
 
   	/* get the server's DNS entry */
-	server = gethostbyname(hostname);
-	if (server == NULL) {
+	master->server = gethostbyname(hostname);
+	if (master->server == NULL) {
 		fprintf(stderr,"ERROR, no such host as %s\n", hostname);
 		exit(0);
 	}
 
-	serveraddr.sin_family = AF_INET;
-	bcopy((char *)server->h_addr, (char *)&serveraddr.sin_addr.s_addr, server->h_length);
-	serveraddr.sin_port = htons(portno);
+	master->serveraddr.sin_family = AF_INET;
+	bcopy((char *)master->server->h_addr, (char *)&master->serveraddr.sin_addr.s_addr, master->server->h_length);
+	master->serveraddr.sin_port = htons(portno);
+	master->portno = portno;
 	
 	return;
 }
@@ -277,35 +302,35 @@ void resolve_cmd(char * input){
 			//free argv's and argv
 			return;
 		}
-		send_request(_IN_LOGOUT);
+		send_master_request(_IN_LOGOUT);
 
 	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
 		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_request(_IN_JOIN);
+		send_master_request(_IN_JOIN);
 
 	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
 		if(build_request(_IN_LEAVE, argc, argv) != _IN_LEAVE){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_request(_IN_LEAVE);
+		send_master_request(_IN_LEAVE);
 
 	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
 		if(build_request(_IN_LIST, 0, NULL) != _IN_LIST){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_request(_IN_LIST);
+		send_master_request(_IN_LIST);
 
 	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
 		if(build_request(_IN_WHO, argc, argv) != _IN_WHO){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_request(_IN_WHO);
+		send_channel_request(_IN_WHO);
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
@@ -333,7 +358,11 @@ void switch_channel(char *name){
 		ch = session->channels[i];
 		if(!strncmp(ch->name, name, NAMELEN)){
 			session->_active_channel = ch;
-			serveraddr.sin_port = htons(ch->portno);
+			if(ch->portno > 0){
+				session->_active_channel->serveraddr.sin_port = htons(ch->portno);
+			}else{
+				printf("[*] DEBUG: switch_channel has invalid port number from requested channel\n");
+			}
 			return;
 		}
 	}
@@ -343,61 +372,93 @@ void switch_channel(char *name){
 	return;
 }
 
-void send_request(uint32_t t){
+void send_master_request(uint32_t t){
+	char out_buf[REQSIZE];
+	uint32_t type_id;
+	int n, size, portno;
+	struct _MASTER_INFO *master;
+
+	if(t > 7 || t < 0){
+		printf("[*] DEBUG: send_master_request received bad type\n");
+		return;
+	}
+	type_id = t;
+	size = _REQ_SIZES[type_id];
+	if(_REQ_ARRAY[type_id] == NULL || size < 0 || size > REQSIZE){
+		printf("[*] DEBUG: send_master_request received invalid request size\n");
+		return;
+	}
+	memset(out_buf, 0, REQSIZE);
+	memcpy(out_buf, _REQ_ARRAY[type_id], size);
+	master = session->_master;
+	/*Set portno to master portno*/
+	//serveraddr.sin_port = htons(master_portno);
+
+	n = sendto(master->sockfd, out_buf, size, 0, (struct sockaddr *)&master->serveraddr, sizeof(struct sockaddr_in));
+	if(n < 0)
+		printf("[*] DEBUG: send_master_request failed to send request\n");
+
+	return;
+}
+
+void send_channel_request(uint32_t t){
 	char out_buf[REQSIZE];
 	char buf[BUFSIZE];
-	uint32_t type = t;
-	int n, size, new_portno;
+	uint32_t type_id;
+	struct channel *active_ch;
+	int n, size, ch_portno;
 
-	if(type > 7)
-		error("ERROR: send_request() got invalid request type");
+	if(t > 7 || t < 0){
+		printf("[*] DEBUG: send_channel_request received bad type\n");
+                return;
+	}
 
-	size = _REQ_SIZES[type];
-	memset(out_buf, 0, REQSIZE);
-
-	if(_REQ_ARRAY[type] == NULL || size < 0 || size > REQSIZE)
-		error("ERROR: send_request() received invalid request size");
-
-	memcpy(out_buf, _REQ_ARRAY[type], size);
-	
-	int serverlen = sizeof(serveraddr);
-
-	if(type == _IN_LOGOUT || type == _IN_JOIN){
-		serveraddr.sin_port = htons(master_portno);
-		memset(buf, 0, BUFSIZE);
-		n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
-		//add mutex lock
-		/*puts("Waiting for join req ack");
-		n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-		printf("Server requested to use port# %s\n", buf);
-        	new_portno = atoi(buf);
-
-        	session->channels[session->num_channels] = malloc(sizeof(struct channel));
-        	memset(session->channels[session->num_channels], 0, sizeof(struct channel));
-        	strncpy(session->channels[session->num_channels]->name, _JOIN.channel_name, NAMELEN);
-        	session->_active_channel = session->channels[session->num_channels];
-        	session->num_channels++;
-		serveraddr.sin_port = htons(new_portno);
-		*/
-		puts("Sent join request");
+	type_id = t;
+	size = _REQ_SIZES[type_id];
+	if(_REQ_ARRAY[type_id] == NULL || size < 0 || size > REQSIZE){
+		printf("[*] DEBUG: send_channel_request received invalid request size\n");
 		return;
 	}
 
-	n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
+	memset(out_buf, 0, REQSIZE);
+
+	if(session->_active_channel){
+		active_ch = session->_active_channel;
+		if(active_ch->portno < 1){
+			printf("[*] DEBUG: send_channel_request got invalid port number from active channel\n");
+			return;
+		}
+	}
+
+	memcpy(out_buf, _REQ_ARRAY[type_id], size);
+
+	n = sendto(session->_master->sockfd, out_buf, size, 0, (struct sockaddr *)&active_ch->serveraddr, sizeof(struct sockaddr_in));
 	if(n < 0)
 		error("ERROR: sendto failed");
-
-	if(type == _IN_LOGOUT || _IN_JOIN)
-		serveraddr.sin_port = htons(portno);
 	
 	return;
 }
 
 void *recv_request(void *vargp){
-	char input[BUFSIZE];	
-	int n, serverlen;
+	char input[BUFSIZE];
+	struct sockaddr_in serveraddr;
+	int n, serverlen, sockfd;
 
 	serverlen = sizeof(serveraddr);
+	memset(&serveraddr, 0, serverlen);
+	//mutex lock
+	if(session->_master){
+		if(session->_master->sockfd > 0){
+			sockfd = session->_master->sockfd;
+		}else{
+			printf("[*] DEBUG: recv_request received invalid sockfd from session->_master\n");
+			exit(1);
+		}
+	}else{
+		printf("[*] DEBUG: recv_request received NULL session->_master\n");
+		exit(1);
+	}
+
 	while(1){
 		memset(input, 0, BUFSIZE);
 		n = recvfrom(sockfd, input, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
@@ -405,6 +466,12 @@ void *recv_request(void *vargp){
 			puts("recvfrom failed in recv_request");
 		}else if(!memcmp(input, &_IN_SAY, 4)){
 			printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
+			//mutex lock
+			if(serveraddr.sin_port != session->_active_channel->serveraddr.sin_port){
+				printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel\n");
+				printf("Serveraddr Info:\n\tin_addr: %u\n\tportno: %d\n\n", serveraddr.sin_addr.s_addr, serveraddr.sin_port);
+				//Search pending join channels
+			}
 		}
 
 		if(!memcmp(input, &_IN_LOGOUT, 4)){
@@ -427,7 +494,7 @@ void user_prompt(){
 	argv = malloc((sizeof(char *))*2);
 	if(!argv)
 		error("ERROR: malloc returned null in user_prompt()");
-	argv[0] = session->active_channel;
+	argv[0] = session->_active_channel->name;
 	argv[1] = input;
 
 	while(1){
@@ -451,7 +518,7 @@ void user_prompt(){
 			break;
 		}else{	
 			build_request(_IN_SAY, 2, argv);
-			send_request(_IN_SAY);
+			send_channel_request(_IN_SAY);
 		}
 	}
 
@@ -461,35 +528,45 @@ void user_prompt(){
 	return;
 }
 
-int init_server_connection() {
+int init_server_connection(char *hostname, int portno) {
 	int n, serverlen;
 	char buf[BUFSIZE];
 	char out_buf[BUFSIZE];
+	struct _MASTER_INFO *master;
 
 	memset(buf, 0, BUFSIZE);
 	memset(out_buf, 0, BUFSIZE);
 
-	resolve_host();
+	resolve_host(hostname, portno);
+	if(session->_master){
+		master = session->_master;
+	}else{
+		error("ERROR: init_server_connection received NULL session->_master.");
+	}
+
+	session->channels[session->num_channels] = malloc(sizeof(struct channel));
+	memset(session->channels[session->num_channels], 0, sizeof(struct channel));
 
 	/* Start server handshake */
-	serverlen = sizeof(serveraddr);     
+	serverlen = sizeof(struct sockaddr_in);
 	build_request(_IN_LOGIN, 0, NULL);
-	send_request(_IN_LOGIN);
-	n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
+	send_master_request(_IN_LOGIN);
+	n = recvfrom(master->sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&session->channels[session->num_channels]->serveraddr, &serverlen);
 	if (n < 0){
 		puts("ERROR: login failed");
 		return -1;
 	}
-	master_portno = portno;
+	//master_portno = portno;
 	printf("Server requested to use port# %s\n", buf);
 	portno = atoi(buf);
-	serveraddr.sin_port = htons(portno);
+	session->channels[session->num_channels]->portno = portno;
+	session->channels[session->num_channels]->serveraddr.sin_port = htons(portno);
 
-	session->channels[session->num_channels] = malloc(sizeof(struct channel));
-	memset(session->channels[session->num_channels], 0, sizeof(struct channel));
 	strncpy(session->channels[session->num_channels]->name, "Commons", strlen("Commons"));
 	session->_active_channel = session->channels[session->num_channels];
 	session->num_channels++;
+
+	printf("[*] CLIENT-LOG: active_channel info:\n\tname: %s\n\tport: %d\n\n", session->_active_channel->name, session->_active_channel->portno);
 
 	//build_request(_IN_LOGIN, 0, NULL);
 	//send_request(_IN_LOGIN);
@@ -498,6 +575,8 @@ int init_server_connection() {
 }
 
 int main(int argc, char **argv) {
+	char *hostname;
+	int portno;
 
     	/* check command line arguments */
 	if (argc != 4) {
@@ -529,8 +608,8 @@ int main(int argc, char **argv) {
 	strncpy(session->name, argv[3], NAMELEN);
 
 	/*Fix this. Channel should not default to Commons until login succeeds*/
-	char channel[]="Commons";
-	strncpy(session->active_channel, channel, NAMELEN);
+	//char channel[]="Commons";
+	//strncpy(session->active_channel, channel, NAMELEN);
 
 	_REQ_ARRAY[0] = (void *)&_LOGIN;
 	_REQ_SIZES[0] = sizeof(struct _REQ_LOGIN);
@@ -556,7 +635,7 @@ int main(int argc, char **argv) {
 	_REQ_ARRAY[7] = (void *)&_LIVE;
 	_REQ_SIZES[7] = sizeof(struct _REQ_LIVE);
 		
-	if(init_server_connection() == 0){
+	if((init_server_connection(hostname, portno)) == 0){
 		pthread_create(&tid, NULL, recv_request, NULL);
 		user_prompt();
 	}

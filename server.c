@@ -279,7 +279,7 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 		return NULL;
 
 	client = client_list;
-	puts("In client_lookup");
+	//puts("In client_lookup");
 	while(client){
 		n = strlen(addr);
 		if(!strncmp(client->user_s->hostaddrp, addr, n)){
@@ -688,36 +688,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		if(handle_join_request(tmp_sockfd, channel_lookup(msg), client->user_s, msg))
 			return(_IN_ERROR + _IN_JOIN);
 
-		/*
-		struct channel * ch = channel_lookup(msg);
-		if(ch){
-			printf("Found channel: %s\n", ch->name);
-			int j = add_channel_user(client->user_s, ch);
-			printf("[*] add_channel_user returned %d\n", j);
-			new_connection(tmp_sockfd, ch, client->user_s->uname);
-		}else{
-			printf("Channel NOT found: %s\n", msg);
-			handle_join_request(tmp_sockfd, 
-			ch_mgr->channels[ch_mgr->size] = create_channel(msg, 0);
-			shmem_user.type_id = _IN_JOIN;
-                	memcpy(shmem_user.user_name, client->user_s->uname, NAMELEN);
-                	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
-			shmem_enqueue(ch_mgr->channels[ch_mgr->size]);
-			ch_mgr->size++;
-		}*/
-		/*
-		ch_mgr->channels = malloc(1024 * (sizeof(struct channel*)));
-        	ch_mgr->channels[1] = create_channel("OtherChannel", 0);
-        	ch_mgr->size++;
-		memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
-        	shmem_user.type_id = _IN_JOIN;
-		memcpy(msg, "JOHN", 4);
-        	memcpy(shmem_user.user_name, msg, NAMELEN);
-        	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
-		shmem_enqueue(ch_mgr->channels[1]);
-		*/
 		return _IN_JOIN;
-		//break;
 
 	}else if(type_id == _IN_LEAVE){
                 server_log("Type: Leave");
@@ -1017,42 +988,6 @@ int handle_join_request(int sfd, struct channel* ch, struct user *client, char *
 
 	return 0;
 }
-/*
-void new_connection(int sfd, struct channel* ch, char * name){
-	struct hostent *hostp;
-	char * hostaddrp;
-	ssize_t n;
-	int sockfd = sfd;
-
-	hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
-	if (hostp == NULL)
-		error("ERROR on gethostbyaddr");
-
-	hostaddrp = inet_ntoa(clientaddr.sin_addr);
-	if (hostaddrp == NULL)
-		error("ERROR on inet_ntoa\n");
-
-	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
-	shmem_user.type_id = _IN_JOIN;
-	memcpy(shmem_user.user_name, name, NAMELEN);
-	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
-
-	shmem_enqueue(ch);
-	debug("Join request sent to child");
-	printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
-	
-	n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
-	if (n < 0)
-		error("ERROR in sendto");
-
-	
-	//*Once sighandler is implemented, add check here
-	//*Verify that client successfully connected to child
-	
-
-	return;
-}
-*/
 
 int main(int argc, char** argv) {
 	struct _REQ_NEW *msg;
