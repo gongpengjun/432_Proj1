@@ -98,9 +98,16 @@ struct channel{
 	unsigned int num_users;
 };
 
+struct channel_list{
+        struct channel *ch;
+        struct channel_list *ch_next;
+        struct channel_list *ch_prev;
+};
+
 struct user{
 	char uname[NAMELEN];
 	unsigned int id;
+	struct channel_list *ch_list;
 	struct sockaddr_in clientaddr;
 	struct hostent *hostp;		//client host info
 	char *hostaddrp;		//dotted decimal host addr str
@@ -145,7 +152,9 @@ pid_t pid;
 char logging_msg[128];
 
 void shmem_enqueue(struct channel *ch);
-
+struct channel *create_channel(char *name, int p);
+int handle_join_request(int sfd, struct channel* ch, struct user *client, char *channel_name);
+void new_connection(int sfd, struct channel* ch, char * name);
 void error(char *msg){
 	perror(msg);
 	exit(1);
@@ -211,6 +220,55 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 	}
 
 	return hostaddrp_copy;
+}
+
+int add_channel_user(struct user *client, struct channel *ch){
+	struct channel_list *next_channel;
+
+	next_channel = client->ch_list;
+
+	while(next_channel){
+		if(!strncmp(next_channel->ch->name, ch->name, NAMELEN)){
+			return 1;
+		}
+
+		if(next_channel->ch_next == NULL)
+			break;
+		next_channel = next_channel->ch_next;
+	}
+
+	next_channel->ch_next = malloc(sizeof(struct channel_list));
+	memset(next_channel->ch_next, 0, sizeof(struct channel_list));
+	next_channel->ch_next->ch = ch;
+	next_channel->ch_next->ch_prev = next_channel;
+
+	return 0;
+}
+
+int remove_channel_user(struct user *client, struct channel *ch){
+	struct channel_list *next_channel;
+
+	next_channel = client->ch_list;
+	while(next_channel){
+		if(!strncmp(next_channel->ch->name, ch->name, NAMELEN)){
+			if(next_channel->ch_next != NULL && next_channel->ch_prev != NULL){
+				next_channel->ch_next->ch_prev = next_channel->ch_prev;
+				next_channel->ch_prev->ch_next = next_channel->ch_next;
+				free(next_channel);
+			}else if(next_channel->ch_next != NULL){
+				next_channel->ch_next->ch_prev = NULL;
+				free(next_channel);
+			}else if(next_channel->ch_prev != NULL){
+				next_channel->ch_prev->ch_next = NULL;
+				free(next_channel);
+			}else{
+				next_channel->ch = NULL;
+			}
+			return 1;
+		}
+		next_channel = next_channel->ch_next;
+	}
+	return 0;
 }
 
 struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
@@ -296,11 +354,14 @@ int client_logout(struct AUTHD_CLIENT *client){
 	int n;
 	if(client){
 		if(client->prev && client->next){
+			puts("Client has next and prev");
 			client->next->prev = client->prev;
 			client->prev->next = client->next;
 		}else if(client->next){
+			puts("Client has next");
 			client->next->prev = NULL;
 		}else if(client->prev){
+			puts("Client has prev");
 			client->prev->next = NULL;
 		}
 
@@ -316,26 +377,32 @@ int client_logout(struct AUTHD_CLIENT *client){
 		//FIX hardcoded channel
 		shmem_enqueue(ch_mgr->channels[0]);
 
+		//FIX: Free channel list
+		/*struct channel_list * ch = client->user_s->ch_list;
+		while(ch){
+		}
+		*/
 		free(client->user_s);
 		free(client);
+		client_list = NULL;
 		return 0;
 	}
 	return -1;
 }
 
-int client_login(struct _REQ_NEW *req, char *uname){
+struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	int n;
 	struct user *new_user;
 	struct AUTHD_CLIENT *client;
 
 	if(!(new_user = malloc(sizeof(struct user)))){
 		debug("client login failed to allocate space for new_user");
-		return -1;
+		return NULL;
 	}
 
 	if(!(client = malloc(sizeof(struct AUTHD_CLIENT)))){
 		debug("client login failed to allocate new client struct");
-		return -1;
+		return NULL;
 	}
 
 	memset(new_user, 0, sizeof(struct user));
@@ -355,7 +422,18 @@ int client_login(struct _REQ_NEW *req, char *uname){
 	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
         server_log(logging_msg);
 
-	return 0;
+	/*while(client){
+		printf("Client name: %s\n", client->user_s->uname);
+		client = client->prev;
+	}*/
+
+	new_user->ch_list = malloc(sizeof(struct channel_list));
+	memset(new_user->ch_list, 0, sizeof(struct channel_list));
+	new_user->ch_list->ch = ch_mgr->channels[0];
+	new_user->ch_list->ch_next = NULL;
+	new_user->ch_list->ch_prev = NULL;
+
+	return client;
 }
 
 void leave_channel(struct SHMEM_USR_ACTION *req){
@@ -519,10 +597,21 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	return;
 }
 
+struct channel * channel_lookup(char * ch_name){
+	int i;
+
+	for(i=0; i < ch_mgr->size; i++){
+		if((strncmp(ch_name, ch_mgr->channels[i]->name, NAMELEN)) == 0)
+			return(ch_mgr->channels[i]);
+	}
+	return NULL;
+}
+
 uint32_t handle_request(struct _REQ_NEW * req){
 	/**/
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
+	struct AUTHD_CLIENT *client;
 	int n;
 	
 	memset(msg, 0, MSGSIZE+4);
@@ -537,6 +626,14 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	snprintf(logging_msg, 128, "type_id: %d (0x%08x)\n", type_id, type_id);
 	server_log(logging_msg);
 
+	if(type_id != _IN_LOGIN){
+		client = client_lookup(req->hostaddrp, NULL);
+		if(client == NULL){
+			server_log("Received request from non-authenticated user");
+			return _IN_ERROR;
+		}
+	}
+
 	if(type_id == _IN_LOGIN){
 		server_log("Type: Login");
 		server_log("Client requested to login to channel");
@@ -546,8 +643,14 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		}
 
 		memcpy(msg, &req->data[4], NAMELEN);
-		if((client_lookup(req->hostaddrp, msg)) == NULL){
-                	client_login(req, msg);	
+		client = client_lookup(req->hostaddrp, msg);
+		if(client == NULL){
+                	client = client_login(req, msg);
+			if(client == NULL){
+				debug("Login request failed in client_login");
+				return(_IN_ERROR + _IN_LOGIN);
+			}
+			handle_join_request(tmp_sockfd, ch_mgr->channels[0], client->user_s, ch_mgr->channels[0]->name);
 		}else{
 			debug("Login request received from already authenticated user");
 		}
@@ -581,6 +684,38 @@ uint32_t handle_request(struct _REQ_NEW * req){
 			server_log("Join request has invalid size");
 			return(_IN_ERROR + _IN_JOIN);
 		}
+		memcpy(msg, &req->data[4], NAMELEN);
+		if(handle_join_request(tmp_sockfd, channel_lookup(msg), client->user_s, msg))
+			return(_IN_ERROR + _IN_JOIN);
+
+		/*
+		struct channel * ch = channel_lookup(msg);
+		if(ch){
+			printf("Found channel: %s\n", ch->name);
+			int j = add_channel_user(client->user_s, ch);
+			printf("[*] add_channel_user returned %d\n", j);
+			new_connection(tmp_sockfd, ch, client->user_s->uname);
+		}else{
+			printf("Channel NOT found: %s\n", msg);
+			handle_join_request(tmp_sockfd, 
+			ch_mgr->channels[ch_mgr->size] = create_channel(msg, 0);
+			shmem_user.type_id = _IN_JOIN;
+                	memcpy(shmem_user.user_name, client->user_s->uname, NAMELEN);
+                	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
+			shmem_enqueue(ch_mgr->channels[ch_mgr->size]);
+			ch_mgr->size++;
+		}*/
+		/*
+		ch_mgr->channels = malloc(1024 * (sizeof(struct channel*)));
+        	ch_mgr->channels[1] = create_channel("OtherChannel", 0);
+        	ch_mgr->size++;
+		memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+        	shmem_user.type_id = _IN_JOIN;
+		memcpy(msg, "JOHN", 4);
+        	memcpy(shmem_user.user_name, msg, NAMELEN);
+        	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
+		shmem_enqueue(ch_mgr->channels[1]);
+		*/
 		return _IN_JOIN;
 		//break;
 
@@ -833,7 +968,57 @@ void shmem_enqueue(struct channel *ch){
 	return;
 }
 
-void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
+int handle_join_request(int sfd, struct channel* ch, struct user *client, char *channel_name){
+	struct hostent *hostp;
+	char * hostaddrp;
+	int n, sockfd;
+
+	sockfd = sfd;
+
+	hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
+        if (hostp == NULL)
+                error("ERROR on gethostbyaddr");
+
+        hostaddrp = inet_ntoa(clientaddr.sin_addr);
+        if (hostaddrp == NULL)
+                error("ERROR on inet_ntoa\n");
+
+	if(ch == NULL){
+		if(channel_name == NULL){
+			debug("handle_join_request received NULL channel_name");
+			return -1;
+		}
+		n = strlen(channel_name);
+		if(n < 1 || n > NAMELEN){
+			debug("handle_join_request received invalid channel_name length");
+			return -1;
+		}
+		ch_mgr->channels[ch_mgr->size] = create_channel(channel_name, 0);
+		ch = ch_mgr->channels[ch_mgr->size];
+		ch_mgr->size++;
+	}
+
+	n = add_channel_user(client, ch);
+	printf("[*] add_channel_user returned: %d\n", n);
+
+	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+        shmem_user.type_id = _IN_JOIN;
+        memcpy(shmem_user.user_name, client->uname, NAMELEN);
+        memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
+
+	shmem_enqueue(ch);
+
+	debug("Join request sent to child");
+        printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
+
+        n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
+        if (n < 0)
+                error("ERROR in sendto");
+
+	return 0;
+}
+/*
+void new_connection(int sfd, struct channel* ch, char * name){
 	struct hostent *hostp;
 	char * hostaddrp;
 	ssize_t n;
@@ -849,7 +1034,7 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 
 	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
 	shmem_user.type_id = _IN_JOIN;
-	memcpy(shmem_user.user_name, _LOGIN->user_name, NAMELEN);
+	memcpy(shmem_user.user_name, name, NAMELEN);
 	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
 
 	shmem_enqueue(ch);
@@ -860,13 +1045,14 @@ void new_connection(int sfd, struct channel* ch, struct _REQ_LOGIN *_LOGIN){
 	if (n < 0)
 		error("ERROR in sendto");
 
-	/*
-	*Once sighandler is implemented, add check here
-	*Verify that client successfully connected to child
-	*/
+	
+	//*Once sighandler is implemented, add check here
+	//*Verify that client successfully connected to child
+	
 
 	return;
 }
+*/
 
 int main(int argc, char** argv) {
 	struct _REQ_NEW *msg;
@@ -930,10 +1116,15 @@ int main(int argc, char** argv) {
 		msg = accept_input_blk(sockfd);
 		msg_type = handle_request(msg);
 
-		if(msg_type == _IN_LOGIN){
-			memcpy(_LOGIN, msg->data, req_size);
-			new_connection(sockfd, ch_mgr->channels[0], _LOGIN);
-		}
+		//if(msg_type == _IN_LOGIN){
+		//	memcpy(_LOGIN, msg->data, req_size);
+		//	new_connection(sockfd, ch_mgr->channels[0], _LOGIN->user_name);
+		//}//else if(msg_type == _IN_JOIN){
+		/*	ch_mgr->channels = malloc(1024 * (sizeof(struct channel*)));
+       			ch_mgr->channels[1] = create_channel("OtherChannel", 0);
+        		ch_mgr->size++;
+			
+		}*/
 		free(msg);
 	}
 

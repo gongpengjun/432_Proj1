@@ -30,6 +30,7 @@ const char _CMD_LIST[]="list";
 const char _CMD_WHO[]="who";
 const char _CMD_SWITCH[]="switch";
 
+void switch_channel(char *name);
 void send_request(uint32_t t);
 
 struct __attribute__((__packed__)) _REQ_LOGIN{
@@ -77,6 +78,15 @@ unsigned int _REQ_SIZES[8];
 struct session_info{
 	char *name;
 	char active_channel[NAMELEN+4];
+	struct channel *channels[1024];
+	struct channel *_active_channel;
+	int num_channels;
+};
+
+struct channel{
+	char name[NAMELEN+4];
+	int sockfd;
+	int portno;
 };
 
 char DEFAULT_HOST[] = "127.0.0.1";
@@ -299,7 +309,8 @@ void resolve_cmd(char * input){
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
-		printf("Sure sure, switching to channel: %s\n", argv[1]);
+		//printf("Sure sure, switching to channel: %s\n", argv[1]);
+		switch_channel("chan1");
 
 	}else{
 		printf("Command '%s' not recognized.\n", argv[0]);
@@ -314,10 +325,29 @@ void resolve_cmd(char * input){
 	return;
 }
 
+void switch_channel(char *name){
+	int i;
+	struct channel *ch;
+
+	for(i=0; i < session->num_channels; i++){
+		ch = session->channels[i];
+		if(!strncmp(ch->name, name, NAMELEN)){
+			session->_active_channel = ch;
+			serveraddr.sin_port = htons(ch->portno);
+			return;
+		}
+	}
+
+	printf("DEBUG: channel not found: %s\n", name);
+
+	return;
+}
+
 void send_request(uint32_t t){
 	char out_buf[REQSIZE];
+	char buf[BUFSIZE];
 	uint32_t type = t;
-	int n, size;
+	int n, size, new_portno;
 
 	if(type > 7)
 		error("ERROR: send_request() got invalid request type");
@@ -332,14 +362,32 @@ void send_request(uint32_t t){
 	
 	int serverlen = sizeof(serveraddr);
 
-	if(type == _IN_LOGOUT)
+	if(type == _IN_LOGOUT || type == _IN_JOIN){
 		serveraddr.sin_port = htons(master_portno);
+		memset(buf, 0, BUFSIZE);
+		n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
+		//add mutex lock
+		/*puts("Waiting for join req ack");
+		n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
+		printf("Server requested to use port# %s\n", buf);
+        	new_portno = atoi(buf);
+
+        	session->channels[session->num_channels] = malloc(sizeof(struct channel));
+        	memset(session->channels[session->num_channels], 0, sizeof(struct channel));
+        	strncpy(session->channels[session->num_channels]->name, _JOIN.channel_name, NAMELEN);
+        	session->_active_channel = session->channels[session->num_channels];
+        	session->num_channels++;
+		serveraddr.sin_port = htons(new_portno);
+		*/
+		puts("Sent join request");
+		return;
+	}
 
 	n = sendto(sockfd, out_buf, size, 0, (struct sockaddr *)&serveraddr, serverlen);
 	if(n < 0)
 		error("ERROR: sendto failed");
 
-	if(type == _IN_LOGOUT)
+	if(type == _IN_LOGOUT || _IN_JOIN)
 		serveraddr.sin_port = htons(portno);
 	
 	return;
@@ -436,6 +484,12 @@ int init_server_connection() {
 	printf("Server requested to use port# %s\n", buf);
 	portno = atoi(buf);
 	serveraddr.sin_port = htons(portno);
+
+	session->channels[session->num_channels] = malloc(sizeof(struct channel));
+	memset(session->channels[session->num_channels], 0, sizeof(struct channel));
+	strncpy(session->channels[session->num_channels]->name, "Commons", strlen("Commons"));
+	session->_active_channel = session->channels[session->num_channels];
+	session->num_channels++;
 
 	//build_request(_IN_LOGIN, 0, NULL);
 	//send_request(_IN_LOGIN);
