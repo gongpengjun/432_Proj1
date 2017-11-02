@@ -691,6 +691,7 @@ int init_server_connection(char *hostname, int portno) {
 	char buf[BUFSIZE];
 	char out_buf[BUFSIZE];
 	struct _MASTER_INFO *master;
+	char *argv[2] = {"join", "Commons"};
 
 	memset(buf, 0, BUFSIZE);
 	memset(out_buf, 0, BUFSIZE);
@@ -709,7 +710,22 @@ int init_server_connection(char *hostname, int portno) {
 	serverlen = sizeof(struct sockaddr_in);
 	build_request(_IN_LOGIN, 0, NULL);
 	send_master_request(_IN_LOGIN);
-	n = recvfrom(master->sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&session->channels[session->num_channels]->serveraddr, &serverlen);
+	//char **argv;
+	//char ch_name[]="Commons";
+	//char cmd_name[]="join";
+	//argv[0] = (char *)&cmd_name;
+	//argv[1] = (char *)&ch_name;
+	//build_request(_IN_JOIN, 2, argv);
+	if(build_request(_IN_JOIN, 2, argv) != _IN_JOIN){
+                        puts("ERROR: build_request failed");
+                        return -1;
+        }
+	if(!(join_channel(_JOIN.channel_name))){
+			puts("ERROR: join channel failed while initializing server connections");
+                        return -1;
+        }
+        send_master_request(_IN_JOIN);
+	/*n = recvfrom(master->sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&session->channels[session->num_channels]->serveraddr, &serverlen);
 	if (n < 0){
 		puts("ERROR: login failed");
 		return -1;
@@ -725,7 +741,7 @@ int init_server_connection(char *hostname, int portno) {
 	session->num_channels++;
 
 	printf("[*] CLIENT-LOG: active_channel info:\n\tname: %s\n\tport: %d\n\n", session->_active_channel->name, session->_active_channel->portno);
-
+	*/
 	//build_request(_IN_LOGIN, 0, NULL);
 	//send_request(_IN_LOGIN);
 

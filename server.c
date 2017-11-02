@@ -237,21 +237,36 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 int add_channel_user(struct user *client, struct channel *ch){
 	struct channel_list *next_channel;
 
+	/*Initialize the client's channel list if it NULL*/
+	if(!client->ch_list){
+		if(!(client->ch_list = malloc(sizeof(struct channel_list)))){
+			debug("failed to allocate channel list for user");
+			return -1;
+		}
+		memset(client->ch_list, 0, sizeof(struct channel_list));
+		client->ch_list->ch = ch;
+		client->ch_list->ch_prev = NULL;
+		client->ch_list->ch_next = NULL;
+		return 0;
+	}
+
 	next_channel = client->ch_list;
 
-	while(next_channel){
+	while(next_channel->ch_next){
+		if(!next_channel->ch){
+			next_channel->ch = ch;
+			return 0;
+		}
 		if(!strncmp(next_channel->ch->name, ch->name, NAMELEN)){
 			return 1;
 		}
-
-		if(next_channel->ch_next == NULL)
-			break;
 		next_channel = next_channel->ch_next;
 	}
 
 	next_channel->ch_next = malloc(sizeof(struct channel_list));
 	memset(next_channel->ch_next, 0, sizeof(struct channel_list));
 	next_channel->ch_next->ch = ch;
+	next_channel->ch_next->ch_next = NULL;
 	next_channel->ch_next->ch_prev = next_channel;
 
 	return 0;
@@ -261,9 +276,13 @@ int remove_channel_user(struct user *client, struct channel *ch){
 	struct channel_list *next_channel;
 
 	next_channel = client->ch_list;
+	printf("[*] remove_channel_user is starting with client: %s\n", client->uname);
 	while(next_channel){
-		if(next_channel->ch == NULL)
+		puts("next_channel iteration");
+		if(next_channel->ch == NULL){
+			puts("next_channel->ch is NULL");
 			break;
+		}
 
 		if(!strncmp(next_channel->ch->name, ch->name, NAMELEN)){
 			if(next_channel->ch_next != NULL && next_channel->ch_prev != NULL){
@@ -277,7 +296,8 @@ int remove_channel_user(struct user *client, struct channel *ch){
 				next_channel->ch_prev->ch_next = NULL;
 				free(next_channel);
 			}else{
-				next_channel->ch = NULL;
+				client->ch_list = NULL;
+				free(next_channel);	
 			}
 			server_log("found channel user. proceeding with shmem_enqueue to remove.");
 			shmem_user.type_id = _IN_LEAVE;
@@ -302,6 +322,7 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 	//puts("In client_lookup");
 	while(client){
 		if(client->user_s){
+			printf("[*] client_lookup: checking client: %s\n", client->user_s->uname);
 			n = strlen(addr);
 			if(uname && addr){
 				if(!memcmp(client->user_s->uname, uname, NAMELEN)){
@@ -316,6 +337,8 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 			}else if(!addr && !uname){
 				return NULL;
 			}
+		}else{
+			printf("[*] client_lookup: client struct has user_s addr: %p\n", client->user_s);
 		}
 		client = client->next;
 	}
@@ -419,11 +442,16 @@ int client_logout(struct AUTHD_CLIENT *client){
 		*/
 
 		usr = client->user_s;
+		if(!usr){
+			printf("ERROR: authd client struct has NULL user struct\n");
+			return -1;
+		}
 		ch_list = usr->ch_list;
 		while(ch_list){
+			printf("[*] client_logout: channel addr -> %p\t user addr -> %p\n", ch_list->ch, usr);
 			if(ch_list->ch != NULL){
-				snprintf(logging_msg, 128, "removing user (%s) from channel (%s).", usr->uname, ch_list->ch->name);
-				server_log(logging_msg);
+				//snprintf(logging_msg, 128, "removing user (%s) from channel (%s).", usr->uname, ch_list->ch->name);
+				//server_log(logging_msg);
 				remove_channel_user(usr, ch_list->ch);
 			}
 			ch_list = ch_list->ch_next;
@@ -453,16 +481,28 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 		return NULL;
 	}
 
+	//Zero-out new user struct
 	memset(new_user, 0, sizeof(struct user));
+	//Zero-out new authd client struct
 	memset(client, 0, sizeof(struct AUTHD_CLIENT));
+	//Init new user's clientaddr, hostaddr, and user name
         memcpy(&new_user->clientaddr, &req->clientaddr, sizeof(struct sockaddr));
         new_user->hostaddrp = resolve_client(&new_user->clientaddr);
         memcpy(new_user->uname, uname, NAMELEN);
 
+	//If client_list has not been initialized, then init with new authd client struct
+	if(!client_list){
+		client_list = client;
+		client->user_s = new_user;
+		return client;
+	}
+	//Find tail of authd client list
 	list_tail = client_list;
 	while(list_tail->next){
+		printf("client_list has next\n");
 		list_tail = list_tail->next;
 	}
+	//append new authd client struct to tail of list
 	list_tail->next = client;
 	client->prev = list_tail;
 	client->next = NULL;
@@ -475,13 +515,17 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	client_list = client;
 	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
         server_log(logging_msg);
-	*/
+	
 	new_user->ch_list = malloc(sizeof(struct channel_list));
 	memset(new_user->ch_list, 0, sizeof(struct channel_list));
 	new_user->ch_list->ch = NULL; //ch_mgr->channels[0];
 	new_user->ch_list->ch_next = NULL;
 	new_user->ch_list->ch_prev = NULL;
+	*/
 
+	//set new tail authd client struct's user struct to the new user's struct
+	client->user_s = new_user;
+	server_log("client_login added client");
 	return client;
 }
 
@@ -701,12 +745,16 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		memcpy(msg, &req->data[4], NAMELEN);
 		client = client_lookup(req->hostaddrp, msg);
 		if(client == NULL){
+			server_log("Logging in client");
                 	client = client_login(req, msg);
 			if(client == NULL){
 				debug("Login request failed in client_login");
 				return(_IN_ERROR + _IN_LOGIN);
+			}else{
+				printf("[*] Client (%s) auth struct:\tthis: %p\tnext: %p\tprev: %p\n", client->user_s->uname, client, client->next, client->prev);
+				printf("[*] Client user struct:\thostaddrp: %s\tname: %s\tchannel_list: %p\n", client->user_s->hostaddrp, client->user_s->uname, client->user_s->ch_list);
 			}
-			handle_join_request(tmp_sockfd, ch_mgr->channels[0], client->user_s, ch_mgr->channels[0]->name);
+			//handle_join_request(tmp_sockfd, ch_mgr->channels[0], client->user_s, ch_mgr->channels[0]->name);
 		}else{
 			debug("Login request received from already authenticated user");
 		}
@@ -1112,6 +1160,17 @@ int handle_join_request(int sfd, struct channel* ch, struct user *client, char *
 
 	n = add_channel_user(client, ch);
 	printf("[*] add_channel_user returned: %d\n", n);
+	int i = 0;
+	struct channel_list *ch_list;
+	ch_list = client->ch_list;
+	printf("[*] User Channel List:\n");
+	while(ch_list){
+		printf("Channel# %d\tName: %s\tNext: %p\tPrev: %p\n", i, ch_list->ch->name, ch_list->ch_next, ch_list->ch_prev);
+		ch_list = ch_list->ch_next;
+		i++;
+	}
+	if(n != 0)
+		return -1;
 
 	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
         shmem_user.type_id = _IN_JOIN;
@@ -1125,9 +1184,9 @@ int handle_join_request(int sfd, struct channel* ch, struct user *client, char *
 	server_log(logging_msg);
         //printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
 
-        n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
-        if (n < 0)
-                error("ERROR in sendto");
+       //n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
+       // if (n < 0)
+        //        error("ERROR in sendto");
 
 	return 0;
 }
@@ -1191,7 +1250,10 @@ int main(int argc, char** argv) {
 	req_size = sizeof(struct _REQ_LOGIN);
         struct _REQ_LOGIN * _LOGIN = malloc(req_size);
 	tmp_sockfd = sockfd;
-	client_list = NULL;
+	//if(!(client_list = malloc(sizeof(struct AUTHD_CLIENT))))
+	//	error("ERROR: malloc failed to allocate space for client_list");
+	//memset(client_list, 0, sizeof(struct AUTHD_CLIENT));
+	
 	while(1){
 		msg = accept_input_blk(sockfd);
 		msg_type = handle_request(msg);
