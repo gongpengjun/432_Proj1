@@ -116,6 +116,7 @@ int serverlen;
 //struct sockaddr_in master_serveraddr;
 //struct hostent *server;
 struct session_info *session;
+struct _PENDING_CHANNEL *pending_channel_list;
 //struct channel *pending_channels[128];
 //char *hostname;
 
@@ -390,8 +391,92 @@ void switch_channel(char *name){
 	return;
 }
 
+struct _PENDING_CHANNEL *new_pending_channel(){
+	struct _PENDING_CHANNEL *pend_ch;
+
+	//mutex lock
+	if(!pending_channel_list){
+		pending_channel_list = malloc(sizeof(struct _PENDING_CHANNEL));
+		if(!pending_channel_list){
+			printf("ERROR: in new_pending_channel, malloc failed to allocate pending_channel_list.\n");
+			return NULL;
+		}
+		memset(pending_channel_list, 0, sizeof(struct _PENDING_CHANNEL));
+		pend_ch = pending_channel_list;
+		return pend_ch;
+	}
+
+	pend_ch = pending_channel_list;
+	while(pend_ch->next)
+		pend_ch = pend_ch->next;
+
+	pend_ch->next = malloc(sizeof(struct _PENDING_CHANNEL));
+	if(!pend_ch->next){
+		printf("ERROR: in new_pending_channel, malloc failed to allocate pend_ch->next.\n");
+		return NULL;
+	}
+	memset(pend_ch->next, 0, sizeof(struct _PENDING_CHANNEL));
+	pend_ch->next->prev = pend_ch;
+	pend_ch = pend_ch->next;
+	
+	return pend_ch;
+}
+
+struct channel *search_pending_channels(char *name){
+	struct channel *ch;
+	struct _PENDING_CHANNEL *pend_ch;
+
+	if(!pending_channel_list)
+		return NULL;
+
+	if(!pending_channel_list->ch){
+		free(pending_channel_list);
+		pending_channel_list = NULL;
+		return NULL;
+	}
+
+	if((strncmp(name, pending_channel_list->ch->name, NAMELEN)) == 0){
+		ch = pending_channel_list->ch;
+		if(pending_channel_list->next){
+			pend_ch = pending_channel_list->next;
+			pend_ch->prev = NULL;
+			free(pending_channel_list);
+			pending_channel_list = pend_ch;
+		}else{
+			free(pending_channel_list);
+			pending_channel_list = NULL;
+		}
+		return ch;
+	}
+
+	pend_ch = pending_channel_list;
+	while(pend_ch->next){
+		pend_ch = pend_ch->next;
+		if(!pend_ch->ch){
+			printf("[*] DEBUG: in pending channel search, found pending channel struct in list without valid channel\n");
+		}
+		if((strncmp(name, pend_ch->ch->name, NAMELEN)) == 0){
+			ch = pend_ch->ch;
+			if((pend_ch->next != NULL) && (pend_ch->prev != NULL)){
+				pend_ch->next->prev = pend_ch->prev;
+				pend_ch->prev->next = pend_ch->next;
+			}else if(pend_ch->next != NULL){
+				pend_ch->next->prev = NULL;
+			}else if(pend_ch->prev != NULL){
+				pend_ch->prev->next = NULL;
+			}
+			free(pend_ch);
+			return ch;
+		}
+	}
+
+	return NULL;
+
+}
+
 struct channel *join_channel(char *name){
 	struct channel *new_ch;
+	struct _PENDING_CHANNEL *pend_ch;
 	int n;
 
 	n = strlen(name);
@@ -404,7 +489,13 @@ struct channel *join_channel(char *name){
 		return NULL;
 	}
 
+	pend_ch = new_pending_channel();
 	new_ch = malloc(sizeof(struct channel));
+	if(!pend_ch || !new_ch){
+		printf("ERROR: failed to allocate new channel\n");
+		return NULL;
+	}
+
 	memset(new_ch, 0, sizeof(struct channel));
 	memcpy(new_ch->name, name, NAMELEN);
 
@@ -416,6 +507,7 @@ struct channel *join_channel(char *name){
 	session->num_channels++;
 	session->_active_channel = new_ch;
 	//Add channel to pending channels
+	pend_ch->ch = new_ch;
 
 	return new_ch;
 }
@@ -488,11 +580,14 @@ void send_channel_request(uint32_t t){
 
 void *recv_request(void *vargp){
 	char input[BUFSIZE];
+	char name[NAMELEN+4];
 	struct sockaddr_in serveraddr;
+	struct channel *ch;
 	int n, serverlen, sockfd;
 
 	serverlen = sizeof(serveraddr);
 	memset(&serveraddr, 0, serverlen);
+	memset(name, 0, NAMELEN+4);
 	//mutex lock
 	if(session->_master){
 		if(session->_master->sockfd > 0){
@@ -514,10 +609,21 @@ void *recv_request(void *vargp){
 		}else if(!memcmp(input, &_IN_SAY, 4)){
 			printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
 			//mutex lock
-			if(serveraddr.sin_port != session->_active_channel->serveraddr.sin_port){
-				printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel\n");
-				printf("Serveraddr Info:\n\tin_addr: %u\n\tportno: %d\n\n", serveraddr.sin_addr.s_addr, serveraddr.sin_port);
-				//Search pending join channels
+			if(pending_channel_list){
+				if(serveraddr.sin_port == session->_master->serveraddr.sin_port){
+				//if(serveraddr.sin_port != session->_active_channel->serveraddr.sin_port){
+					memcpy(name, &input[4], NAMELEN);
+					printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel: %s\n", name);
+					printf("Serveraddr Info:\n\tin_addr: %u\n\tportno: %d\n\n", serveraddr.sin_addr.s_addr, serveraddr.sin_port);
+					//Search pending join channels
+					ch = search_pending_channels(name);
+					if(ch){
+						ch->serveraddr.sin_port = serveraddr.sin_port;
+						ch->portno = ntohs(serveraddr.sin_port);
+						printf("[*] CLIENT-LOG: resolved pending channel's port number: %s\t%d\n", name, ch->portno);
+					}
+					//mutex unlock
+				}
 			}
 		}
 
@@ -653,7 +759,7 @@ int main(int argc, char **argv) {
 		error("ERROR: main() failed to allocate space for user's name");
 	
 	strncpy(session->name, argv[3], NAMELEN);
-
+	pending_channel_list = NULL;
 	/*Fix this. Channel should not default to Commons until login succeeds*/
 	//char channel[]="Commons";
 	//strncpy(session->active_channel, channel, NAMELEN);
