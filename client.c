@@ -506,6 +506,7 @@ struct channel *join_channel(char *name){
 	session->channels[session->num_channels] = new_ch;
 	session->num_channels++;
 	session->_active_channel = new_ch;
+	printf("[*] DEBUG: Joining channel: %s\n", new_ch->name);
 	//Add channel to pending channels
 	pend_ch->ch = new_ch;
 
@@ -568,6 +569,7 @@ void send_channel_request(uint32_t t){
 			return;
 		}
 	}
+	printf("[*] DEBUG: Active Channel Info:\n\tName: %s\n\tS_Addr: %u\n\tPort: %d\n\n", active_ch->name, active_ch->serveraddr.sin_addr.s_addr, active_ch->portno);
 
 	memcpy(out_buf, _REQ_ARRAY[type_id], size);
 
@@ -608,9 +610,11 @@ void *recv_request(void *vargp){
 			puts("recvfrom failed in recv_request");
 		}else if(!memcmp(input, &_IN_SAY, 4)){
 			printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
+			printf("Message came from port: %d\n", ntohs(serveraddr.sin_port));
 			//mutex lock
 			if(pending_channel_list){
-				if(serveraddr.sin_port == session->_master->serveraddr.sin_port){
+				printf("[*] DEBUG: checking pending_channel_list\n");
+				if(session->_active_channel->portno == session->_master->portno){
 				//if(serveraddr.sin_port != session->_active_channel->serveraddr.sin_port){
 					memcpy(name, &input[4], NAMELEN);
 					printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel: %s\n", name);
@@ -647,7 +651,7 @@ void user_prompt(){
 	argv = malloc((sizeof(char *))*2);
 	if(!argv)
 		error("ERROR: malloc returned null in user_prompt()");
-	argv[0] = session->_active_channel->name;
+	//argv[0] = session->_active_channel->name;
 	argv[1] = input;
 
 	while(1){
@@ -655,6 +659,7 @@ void user_prompt(){
 		write(1, "> ", 2);
 
 		n=0;
+		argv[0] = session->_active_channel->name;
 		while(n < BUFSIZE){
 			if((read(0, &input[n], 1)) < 1)
 				break;

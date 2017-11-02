@@ -90,6 +90,7 @@ struct channel{
 	int portno;			//port number assigned to channel
 	char portstr[MAXUINTLEN];
 	int sockfd;
+	struct sockaddr_in serveraddr;
 	sem_t *sem_lock;
 	unsigned int sem_value;
 	void *shmem;
@@ -125,6 +126,12 @@ struct __attribute__((__packed__)) SHMEM_USR_ACTION{
 	struct sockaddr_in clientaddr;
 }shmem_user;
 
+struct __attribute__((__packed__)) SHMEM_SAY_ACTION{
+	uint32_t type_id;
+	char text_field[TEXTLEN];
+	struct sockaddr_in clientaddr;
+}shmem_say;
+
 struct channel_MGR{
 	unsigned int size;
 	struct channel **channels;	//commons channel is always array index 0
@@ -146,6 +153,7 @@ char *hostaddrp;
 int clientlen;
 int tmp_sockfd;
 unsigned int SHMEM_USER_SIZE;
+unsigned int SHMEM_SAY_SIZE;
 unsigned int SHMEM_STCK_SIZE;
 
 pid_t pid;
@@ -697,6 +705,26 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_SAY){
 		server_log("Master Received Type: Say");
+		/*Resolve channel and forward the Say message.*/
+		memcpy(msg, &req->data[4], NAMELEN);
+		struct channel *ch = channel_lookup(msg);
+		//struct sockaddr_in serveraddr_copy;
+		if(ch != NULL){
+			if(ch->sockfd > 0 && &ch->serveraddr != NULL){
+				//memset(&serveraddr_copy, 0, sizeof(struct sockaddr_in));
+				//memcpy(&serveraddr_copy, &serveraddr, sizeof(sockaddr_in));
+				//serveraddr_copy.sin_port = htons(ch->portno);
+				n = sendto(ch->sockfd, req->data, MSGSIZE, 0, (struct sockaddr *)&ch->serveraddr, sizeof(struct sockaddr_in));
+				if(n < 0){
+					server_log("Failed to forward Say message to channel.");
+				}else{
+					server_log("Successfully forwarded Say message to channel.");
+				}
+			}
+		}else{
+			return(_IN_ERROR + _IN_SAY);
+		}
+		
 		return _IN_SAY;
 
 	}else if(type_id == _IN_LIST){
@@ -891,6 +919,7 @@ struct channel *create_channel(char *name, int p){
 		error("ERROR: getsockname failed");
 	portno = ntohs(serveraddr.sin_port);
 	ch->portno = portno;
+	memcpy(&ch->serveraddr, &serveraddr, serverlen);
 	snprintf(ch->portstr, MAXUINTLEN, "%d", portno);
 
 	ch->shmem = create_shmem((SHMEM_USER_SIZE * SHMEM_STCK_SIZE)+4);
@@ -1032,6 +1061,7 @@ int main(int argc, char** argv) {
 	req_Q->size = 0;
 	req_Q_backlog->size = 0;
 	SHMEM_USER_SIZE = sizeof(struct SHMEM_USR_ACTION);
+	SHMEM_SAY_SIZE = sizeof(struct SHMEM_SAY_ACTION);
         SHMEM_STCK_SIZE = 16;
 
 	/*
