@@ -301,6 +301,28 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 	client = client_list;
 	//puts("In client_lookup");
 	while(client){
+		if(client->user_s){
+			n = strlen(addr);
+			if(uname && addr){
+				if(!memcmp(client->user_s->uname, uname, NAMELEN)){
+					if(!strncmp(client->user_s->hostaddrp, addr, n))
+						return client;
+					else
+						return NULL;
+				}
+			}else if(addr && !uname){
+				if(!strncmp(client->user_s->hostaddrp, addr, n))
+					return client;
+			}else if(!addr && !uname){
+				return NULL;
+			}
+		}
+		client = client->next;
+	}
+	server_log("Client not found.");
+	return NULL;
+	/*
+	while(client){
 		n = strlen(addr);
 		if(!strncmp(client->user_s->hostaddrp, addr, n)){
 			if(!uname)
@@ -312,6 +334,7 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 		client = client->prev;
 	}
 	return NULL;
+	*/
 }
 
 int user_lookup(char *addr, char *uname, struct channel *ch){
@@ -388,11 +411,12 @@ int client_logout(struct AUTHD_CLIENT *client){
 			client->prev->next = NULL;
 		}
 
-		n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->user_s->clientaddr, sizeof(struct sockaddr));
+		/*n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->user_s->clientaddr, sizeof(struct sockaddr));
                 if(n < 1)
                         puts("Logout ack failed to send");
                 snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->user_s->uname, client->user_s->hostaddrp);
                 server_log(logging_msg);
+		*/
 
 		usr = client->user_s;
 		ch_list = usr->ch_list;
@@ -417,6 +441,7 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	int n;
 	struct user *new_user;
 	struct AUTHD_CLIENT *client;
+	struct AUTHD_CLIENT *list_tail;
 
 	if(!(new_user = malloc(sizeof(struct user)))){
 		debug("client login failed to allocate space for new_user");
@@ -434,20 +459,26 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
         new_user->hostaddrp = resolve_client(&new_user->clientaddr);
         memcpy(new_user->uname, uname, NAMELEN);
 
-	if(client_list){
-		client->prev = client_list;
-		client->next = NULL;
-		client_list->next = client;
+	list_tail = client_list;
+	while(list_tail->next){
+		list_tail = list_tail->next;
 	}
+	list_tail->next = client;
+	client->prev = list_tail;
+	client->next = NULL;
+	/*
+	client->prev = client_list;
+	client->next = NULL;
+	client_list->next = client;
 
 	client->user_s = new_user;
 	client_list = client;
 	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
         server_log(logging_msg);
-
+	*/
 	new_user->ch_list = malloc(sizeof(struct channel_list));
 	memset(new_user->ch_list, 0, sizeof(struct channel_list));
-	new_user->ch_list->ch = ch_mgr->channels[0];
+	new_user->ch_list->ch = NULL; //ch_mgr->channels[0];
 	new_user->ch_list->ch_next = NULL;
 	new_user->ch_list->ch_prev = NULL;
 
