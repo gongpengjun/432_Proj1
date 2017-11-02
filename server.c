@@ -141,6 +141,7 @@ pthread_t tid;
 pthread_t tid2;
 pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t lock3 = PTHREAD_MUTEX_INITIALIZER;
 struct _REQ_QUEUE * req_Q;
 struct _REQ_QUEUE * req_Q_backlog;
 struct AUTHD_CLIENT *client_list;
@@ -152,6 +153,7 @@ struct sockaddr_in clientaddr;
 char *hostaddrp;
 int clientlen;
 int tmp_sockfd;
+int thread_exit;
 unsigned int SHMEM_USER_SIZE;
 unsigned int SHMEM_SAY_SIZE;
 unsigned int SHMEM_STCK_SIZE;
@@ -161,6 +163,7 @@ char logging_msg[128];
 
 void shmem_enqueue(struct channel *ch);
 struct channel *create_channel(char *name, int p);
+int handle_leave_request(struct channel *ch, struct user *client);
 int handle_join_request(int sfd, struct channel* ch, struct user *client, char *channel_name);
 void new_connection(int sfd, struct channel* ch, char * name);
 void error(char *msg){
@@ -444,11 +447,12 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	return client;
 }
 
-void leave_channel(struct SHMEM_USR_ACTION *req){
+int leave_channel(struct SHMEM_USR_ACTION *req){
 	struct user * old_user;
 	char *hostaddrp;
 	char uname[NAMELEN];
 	int index, i;
+	int retval=0;
 	struct channel * ch = this_channel;
 
 	memset(uname, 0, NAMELEN);
@@ -460,6 +464,7 @@ void leave_channel(struct SHMEM_USR_ACTION *req){
 	if(index == -1){	
 		server_log("User has not joined or has already left this channel");
 		free(hostaddrp);
+		retval = -1;
 	}else if(index < ch->num_users){
 		if(ch->users[index])
 			free(ch->users[index]);
@@ -469,14 +474,18 @@ void leave_channel(struct SHMEM_USR_ACTION *req){
                 	i++;
         	}
 
+		printf("[*] Channel users #: %d\n", this_channel->num_users);
+
         	if(this_channel->num_users > 0)
                 	this_channel->num_users--;
+		if(this_channel->num_users < 1)
+			retval = 1;
 
 		free(hostaddrp);
 		server_log("Client has successfully left the channel");
 	}
 	pthread_mutex_lock(&lock2);
-	return;
+	return retval;
 }
 
 void join_channel(struct SHMEM_USR_ACTION *req){
@@ -598,9 +607,9 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	}
 	pthread_mutex_unlock(&lock1);
 	
-	snprintf(logging_msg, 128, "Queued Say request:\n\ttype_id: %d\n\tchannel name: %s\n\tuser name: %s\n\tmessage: %s",
+	printf(logging_msg, 128, "[*] SERVER-LOG: Queued Say request:\n\ttype_id: %d\n\tchannel name: %s\n\tuser name: %s\n\tmessage: %s",
 		_SAY->type_id, _SAY->channel_name, _SAY->user_name, _SAY->text_field);
-	server_log(logging_msg);
+	//server_log(logging_msg);
 
 	return;
 }
@@ -692,6 +701,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 			server_log("Join request has invalid size");
 			return(_IN_ERROR + _IN_JOIN);
 		}
+		//FIX: hardcoded sizeof(uint32_t) and [4] sizes. replace with #define TYPELEN
 		memcpy(msg, &req->data[4], NAMELEN);
 		if(handle_join_request(tmp_sockfd, channel_lookup(msg), client->user_s, msg))
 			return(_IN_ERROR + _IN_JOIN);
@@ -699,8 +709,17 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		return _IN_JOIN;
 
 	}else if(type_id == _IN_LEAVE){
-                server_log("Type: Leave");
-		server_log("client requested to leave channel");
+                server_log("Type: Leave");	
+		if(req->size != (sizeof(uint32_t)+NAMELEN)){
+			server_log("Leave request has invalid size");
+			return(_IN_ERROR + _IN_JOIN);
+		}
+		memcpy(msg, &req->data[4], NAMELEN);
+		if((handle_leave_request(channel_lookup(msg), client->user_s)) == -1){
+			server_log("Handle leave request failed");
+			return(_IN_ERROR + _IN_LEAVE);
+		}
+
 		return _IN_LEAVE;
 
 	}else if(type_id == _IN_SAY){
@@ -708,12 +727,8 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		/*Resolve channel and forward the Say message.*/
 		memcpy(msg, &req->data[4], NAMELEN);
 		struct channel *ch = channel_lookup(msg);
-		//struct sockaddr_in serveraddr_copy;
 		if(ch != NULL){
 			if(ch->sockfd > 0 && &ch->serveraddr != NULL){
-				//memset(&serveraddr_copy, 0, sizeof(struct sockaddr_in));
-				//memcpy(&serveraddr_copy, &serveraddr, sizeof(sockaddr_in));
-				//serveraddr_copy.sin_port = htons(ch->portno);
 				n = sendto(ch->sockfd, req->data, MSGSIZE, 0, (struct sockaddr *)&ch->serveraddr, sizeof(struct sockaddr_in));
 				if(n < 0){
 					server_log("Failed to forward Say message to channel.");
@@ -746,19 +761,53 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	return _IN_ERROR;
 }
 
+void destroy_channel(){
+	int i;
+	//pthread_mutex_lock(&lock3);
+	//thread_exit = 1;
+	//pthread_mutex_unlock(&lock3);
+
+	//pthread_join(tid, NULL);
+	//pthread_join(tid2, NULL);
+
+	server_log("Cleaning up after children");
+
+	sem_unlink(this_channel->name);
+        sem_close(this_channel->sem_lock);
+        if(this_channel->shmem)
+                munmap(this_channel->shmem, sizeof(struct SHMEM_USR_ACTION)+8);
+        i=0;
+        while(this_channel->users[i]){
+                if(this_channel->users[i]->hostaddrp)
+                        free(this_channel->users[i]->hostaddrp);
+
+                free(this_channel->users[i]);
+                i++;
+        }
+        if(i != this_channel->num_users)
+                debug("found mismatch between free'd user structs and num_users");
+
+        free(this_channel->users);
+
+        close(tmp_sockfd);
+
+	exit(0);
+}
+
 void *shmem_dequeue(void *argvp){
 	unsigned int offset=0;
 	unsigned int size=0;
 	int i;
 	struct channel *ch = this_channel;
-	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)];
+	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+8];
 	
-	while(1){	
+	while(1){
+		pthread_mutex_unlock(&lock3);
 		sem_wait(ch->sem_lock);
 		memcpy(&size, ch->shmem, sizeof(size));
 		if(size > 0){
-			puts("Copying shmem");
-			memset(req_buf, 0, (SHMEM_USER_SIZE*SHMEM_STCK_SIZE));
+			server_log("Copying shmem");
+			memset(req_buf, 0, (SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+8);
 			memcpy(req_buf, (ch->shmem)+sizeof(size), (SHMEM_USER_SIZE*size));
 			memset(ch->shmem, 0, (SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+sizeof(size));
 		}
@@ -768,11 +817,15 @@ void *shmem_dequeue(void *argvp){
 		for(i=0; i<size; i++){
 			memset(&shmem_user, 0, SHMEM_USER_SIZE);
 			memcpy(&shmem_user, req_buf+offset, SHMEM_USER_SIZE);
-			printf("[*]Shmem_user: type_id: %u\t user_name: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, offset);
+			snprintf(logging_msg, 128, "shmem_user: type_id: %u\t user_name: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, offset);
+			server_log(logging_msg);
 			if(shmem_user.type_id == _IN_JOIN){
 				join_channel(&shmem_user);
 			}else if(shmem_user.type_id == _IN_LEAVE){
-				leave_channel(&shmem_user);
+				if((leave_channel(&shmem_user)) == 1){
+					//destroy channel. last user left.
+					printf("[*] SERVER-LOG: Channel is empty. Destroy me\n");
+				}
 			}
 			//Handle request
 			offset+=SHMEM_USER_SIZE;
@@ -805,7 +858,7 @@ void start_channel(int sfd, struct channel *ch){
 	pthread_create(&tid2, NULL, shmem_dequeue, NULL);
 
 	while(1){
-		msg = accept_input_blk(sockfd);	
+		msg = accept_input_blk(sockfd);
 		memcpy(&msg_type, msg->data, sizeof(uint32_t));
 
 		if(msg_type == _IN_SAY){
@@ -837,7 +890,7 @@ void start_channel(int sfd, struct channel *ch){
 		if(msg_type == _IN_LOGOUT){
 			debug("Closing channel and exiting child process");
 			free(msg);
-			break;
+			destroy_channel();
 		}
 
 		free(msg);	
@@ -968,6 +1021,27 @@ void shmem_enqueue(struct channel *ch){
 	return;
 }
 
+int handle_leave_request(struct channel *ch, struct user *client){
+	if(ch == NULL){
+		server_log("handle_leave_request received NULL channel *");
+		return -1;
+	}
+	if(client == NULL){
+		server_log("handle_leave_request received NULL client *");
+		return -1;
+	}
+
+	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+	shmem_user.type_id = _IN_LEAVE;
+	memcpy(shmem_user.user_name, client->uname, NAMELEN);
+	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
+
+	shmem_enqueue(ch);
+	server_log("leave request sent to child.");
+
+	return 0;
+}
+
 int handle_join_request(int sfd, struct channel* ch, struct user *client, char *channel_name){
 	struct hostent *hostp;
 	char * hostaddrp;
@@ -1008,8 +1082,10 @@ int handle_join_request(int sfd, struct channel* ch, struct user *client, char *
 
 	shmem_enqueue(ch);
 
-	debug("Join request sent to child");
-        printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
+	server_log("Join request sent to child");
+	snprintf(logging_msg, 128, "received join request from %s (%s)\n", hostp->h_name, hostaddrp);
+	server_log(logging_msg);
+        //printf("[*] SERVER-LOG:  \treceived login request from %s (%s)\n", hostp->h_name, hostaddrp);
 
         n = sendto(sockfd, ch->portstr, strlen(ch->portstr), 0, (struct sockaddr *)&clientaddr, clientlen);
         if (n < 0)
@@ -1063,6 +1139,7 @@ int main(int argc, char** argv) {
 	SHMEM_USER_SIZE = sizeof(struct SHMEM_USR_ACTION);
 	SHMEM_SAY_SIZE = sizeof(struct SHMEM_SAY_ACTION);
         SHMEM_STCK_SIZE = 16;
+	thread_exit = 0;
 
 	/*
 	*Initialize Channel Manager struct and create Commons channel
