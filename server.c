@@ -137,8 +137,9 @@ struct channel_MGR{
 	struct channel **channels;	//commons channel is always array index 0
 };
 
-pthread_t tid;
-pthread_t tid2;
+//pthread_t tid;
+//pthread_t tid2;
+pthread_t tid[3];
 pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock3 = PTHREAD_MUTEX_INITIALIZER;
@@ -469,22 +470,23 @@ int leave_channel(struct SHMEM_USR_ACTION *req){
 		if(ch->users[index])
 			free(ch->users[index]);
 		i = 0;
-		while(i < this_channel->num_users){
-                	this_channel->users[i] = this_channel->users[i+1];
-                	i++;
-        	}
-
-		printf("[*] Channel users #: %d\n", this_channel->num_users);
+		while(index < this_channel->num_users){
+                	this_channel->users[index] = this_channel->users[index+1];
+                	index++;
+        	}	
 
         	if(this_channel->num_users > 0)
                 	this_channel->num_users--;
-		if(this_channel->num_users < 1)
+		if(this_channel->num_users < 1){
 			retval = 1;
+			printf("[*] Channel users #: %d\n", this_channel->num_users);
+		}
 
+		//printf("[*] Channel users #: %d\n", this_channel->num_users);
 		free(hostaddrp);
 		server_log("Client has successfully left the channel");
 	}
-	pthread_mutex_lock(&lock2);
+	pthread_mutex_unlock(&lock2);
 	return retval;
 }
 
@@ -767,8 +769,10 @@ void destroy_channel(){
 	//thread_exit = 1;
 	//pthread_mutex_unlock(&lock3);
 
-	//pthread_join(tid, NULL);
+	//pthread_join(tid[0], NULL);
 	//pthread_join(tid2, NULL);
+	pthread_mutex_lock(&lock1);
+	pthread_mutex_lock(&lock2);
 
 	server_log("Cleaning up after children");
 
@@ -802,7 +806,6 @@ void *shmem_dequeue(void *argvp){
 	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+8];
 	
 	while(1){
-		pthread_mutex_unlock(&lock3);
 		sem_wait(ch->sem_lock);
 		memcpy(&size, ch->shmem, sizeof(size));
 		if(size > 0){
@@ -823,8 +826,8 @@ void *shmem_dequeue(void *argvp){
 				join_channel(&shmem_user);
 			}else if(shmem_user.type_id == _IN_LEAVE){
 				if((leave_channel(&shmem_user)) == 1){
-					//destroy channel. last user left.
-					printf("[*] SERVER-LOG: Channel is empty. Destroy me\n");
+					printf("shmem_dequeue thread is returning\n");
+					return NULL;
 				}
 			}
 			//Handle request
@@ -833,11 +836,46 @@ void *shmem_dequeue(void *argvp){
 	}
 }
 
+void *thread_accept(void *argvp){
+	struct _REQ_NEW *msg;
+	uint32_t msg_type;
+	int sockfd, n;
+
+	memcpy(&sockfd, argvp, sizeof(int));
+
+	while(1){
+		msg = accept_input_blk(sockfd);
+		memcpy(&msg_type, msg->data, sizeof(uint32_t));
+
+		if(msg_type == _IN_SAY){
+			server_log("Type: Say");
+			if(msg->size != MSGSIZE){
+				server_log("Say request has invalid size");
+				continue;
+			}
+			if(strncmp(&msg->data[sizeof(uint32_t)], this_channel->name, strlen(this_channel->name))){
+				server_log("Say request sent to wrong channel");
+				continue;
+			}else{
+				n = user_lookup(msg->hostaddrp, NULL, this_channel);
+				if(n < 0){
+					server_log("received Say request from non-authenticated user");
+					continue;
+				}
+			queue_say_request(msg, n);
+			}
+		}
+		free(msg);
+	}
+
+}
+
 void start_channel(int sfd, struct channel *ch){
 	struct _REQ_NEW * msg;
 	char *userhost_addr;
 	uint32_t msg_type;
 	int sockfd = sfd;
+	int *sock;
 	int i, n;
 
 	tmp_sockfd = sockfd;
@@ -854,10 +892,16 @@ void start_channel(int sfd, struct channel *ch){
 	if(sockfd < 0)
 		error("ERROR: start_channel() received bad sockfd");
 
-	pthread_create(&tid, NULL, send_requests, NULL);
-	pthread_create(&tid2, NULL, shmem_dequeue, NULL);
+	sock = &sockfd;
 
+	pthread_create(&tid[0], NULL, send_requests, NULL);
+	pthread_create(&tid[1], NULL, shmem_dequeue, NULL);
+	pthread_create(&tid[2], NULL, thread_accept, sock);
+
+	pthread_join(tid[1], NULL);
+	destroy_channel();
 	while(1){
+		/*
 		msg = accept_input_blk(sockfd);
 		memcpy(&msg_type, msg->data, sizeof(uint32_t));
 
@@ -893,7 +937,8 @@ void start_channel(int sfd, struct channel *ch){
 			destroy_channel();
 		}
 
-		free(msg);	
+		free(msg);
+		*/
 	}
 
 	sem_unlink(this_channel->name);
