@@ -262,6 +262,9 @@ int remove_channel_user(struct user *client, struct channel *ch){
 
 	next_channel = client->ch_list;
 	while(next_channel){
+		if(next_channel->ch == NULL)
+			break;
+
 		if(!strncmp(next_channel->ch->name, ch->name, NAMELEN)){
 			if(next_channel->ch_next != NULL && next_channel->ch_prev != NULL){
 				next_channel->ch_next->ch_prev = next_channel->ch_prev;
@@ -276,6 +279,11 @@ int remove_channel_user(struct user *client, struct channel *ch){
 			}else{
 				next_channel->ch = NULL;
 			}
+			server_log("found channel user. proceeding with shmem_enqueue to remove.");
+			shmem_user.type_id = _IN_LEAVE;
+			memcpy(shmem_user.user_name, client->uname, NAMELEN);
+			memcpy(&shmem_user.clientaddr, &client->clientaddr, sizeof(struct sockaddr));
+			shmem_enqueue(ch);
 			return 1;
 		}
 		next_channel = next_channel->ch_next;
@@ -363,6 +371,9 @@ struct _REQ_NEW * accept_input_blk(int sockfd){
 }
 
 int client_logout(struct AUTHD_CLIENT *client){
+	struct user *usr;
+	struct channel_list *ch_list;
+
 	int n;
 	if(client){
 		if(client->prev && client->next){
@@ -383,17 +394,17 @@ int client_logout(struct AUTHD_CLIENT *client){
                 snprintf(logging_msg, 128, "Logging out client:\nUsername: %s\nAddress: %s", client->user_s->uname, client->user_s->hostaddrp);
                 server_log(logging_msg);
 
-		shmem_user.type_id = _IN_LEAVE;
-		memcpy(shmem_user.user_name, client->user_s->uname, NAMELEN);
-		memcpy(&shmem_user.clientaddr, &client->user_s->clientaddr, sizeof(struct sockaddr));
-		//FIX hardcoded channel
-		shmem_enqueue(ch_mgr->channels[0]);
-
-		//FIX: Free channel list
-		/*struct channel_list * ch = client->user_s->ch_list;
-		while(ch){
+		usr = client->user_s;
+		ch_list = usr->ch_list;
+		while(ch_list){
+			if(ch_list->ch != NULL){
+				snprintf(logging_msg, 128, "removing user (%s) from channel (%s).", usr->uname, ch_list->ch->name);
+				server_log(logging_msg);
+				remove_channel_user(usr, ch_list->ch);
+			}
+			ch_list = ch_list->ch_next;
 		}
-		*/
+
 		free(client->user_s);
 		free(client);
 		client_list = NULL;
@@ -433,11 +444,6 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	client_list = client;
 	snprintf(logging_msg, 128, "Client successfully logged in:\nUsername: %s\nAddress: %s", new_user->uname, new_user->hostaddrp);
         server_log(logging_msg);
-
-	/*while(client){
-		printf("Client name: %s\n", client->user_s->uname);
-		client = client->prev;
-	}*/
 
 	new_user->ch_list = malloc(sizeof(struct channel_list));
 	memset(new_user->ch_list, 0, sizeof(struct channel_list));
@@ -765,12 +771,8 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 void destroy_channel(){
 	int i;
-	//pthread_mutex_lock(&lock3);
-	//thread_exit = 1;
-	//pthread_mutex_unlock(&lock3);
 
-	//pthread_join(tid[0], NULL);
-	//pthread_join(tid2, NULL);
+	/*Lock mutexes to ensure threads finish current task before exiting*/
 	pthread_mutex_lock(&lock1);
 	pthread_mutex_lock(&lock2);
 
@@ -792,7 +794,6 @@ void destroy_channel(){
                 debug("found mismatch between free'd user structs and num_users");
 
         free(this_channel->users);
-
         close(tmp_sockfd);
 
 	exit(0);
@@ -871,9 +872,9 @@ void *thread_accept(void *argvp){
 }
 
 void start_channel(int sfd, struct channel *ch){
-	struct _REQ_NEW * msg;
+	//struct _REQ_NEW * msg;
 	char *userhost_addr;
-	uint32_t msg_type;
+	//uint32_t msg_type;
 	int sockfd = sfd;
 	int *sock;
 	int i, n;
@@ -902,29 +903,6 @@ void start_channel(int sfd, struct channel *ch){
 	destroy_channel();
 	while(1){
 		/*
-		msg = accept_input_blk(sockfd);
-		memcpy(&msg_type, msg->data, sizeof(uint32_t));
-
-		if(msg_type == _IN_SAY){
-			server_log("Type: Say");
-			if(msg->size != MSGSIZE){
-				server_log("Say request has invalid size");
-				continue;
-			}
-			if(strncmp(&msg->data[sizeof(uint32_t)], this_channel->name, strlen(this_channel->name))){
-				server_log("Say request sent to wrong channel");
-				continue;
-			}else{
-
-				n = user_lookup(msg->hostaddrp, NULL, this_channel);
-				if(n < 0){
-					server_log("received Say request from non-authenticated user");
-					continue;
-				}
-			queue_say_request(msg, n);
-			}
-		}
-
 		if(msg_type == _IN_ERROR || msg_type == (msg_type + _IN_ERROR)){
 			debug("Server received invalid request");
 			free(msg);
@@ -941,25 +919,6 @@ void start_channel(int sfd, struct channel *ch){
 		*/
 	}
 
-	sem_unlink(this_channel->name);
-	sem_close(this_channel->sem_lock);
-	if(this_channel->shmem)
-		munmap(this_channel->shmem, sizeof(struct SHMEM_USR_ACTION)+8);
-	i=0;
-	while(this_channel->users[i]){
-		if(this_channel->users[i]->hostaddrp)
-			free(this_channel->users[i]->hostaddrp);
-
-		free(this_channel->users[i]);
-		i++;
-	}
-	if(i != this_channel->num_users)
-		debug("found mismatch between free'd user structs and num_users");
-
-	free(this_channel->users);
-
-	close(sockfd);
-	exit(0);
 }
 
 void *create_shmem(size_t size){
@@ -1076,12 +1035,15 @@ int handle_leave_request(struct channel *ch, struct user *client){
 		return -1;
 	}
 
+	remove_channel_user(client, ch);
+	/*
 	memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
 	shmem_user.type_id = _IN_LEAVE;
 	memcpy(shmem_user.user_name, client->uname, NAMELEN);
 	memcpy(&shmem_user.clientaddr, &clientaddr, clientlen);
 
 	shmem_enqueue(ch);
+	*/
 	server_log("leave request sent to child.");
 
 	return 0;
