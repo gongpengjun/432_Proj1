@@ -170,7 +170,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			memset(&_LOGIN, 0, sizeof(struct _REQ_LOGIN));
 			_LOGIN.type_id = type;
 			memcpy(_LOGIN.user_name, session->name, NAMELEN);
-			printf("Login request:\nType: %d\nName: %s\n", _LOGIN.type_id, _LOGIN.user_name);
+			//printf("Login request:\nType: %d\nName: %s\n", _LOGIN.type_id, _LOGIN.user_name);
 			return _LOGIN.type_id;
 		}
 	}else if(type == _IN_LOGOUT){
@@ -186,7 +186,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			if(n > NAMELEN)
 				return _IN_ERROR;
 			memcpy(_JOIN.channel_name, argv[1], NAMELEN);
-			printf("Join request:\nType: %d\nChannel: %s\n\n", _JOIN.type_id, _JOIN.channel_name);
+			//printf("Join request:\nType: %d\nChannel: %s\n\n", _JOIN.type_id, _JOIN.channel_name);
 			return _JOIN.type_id;
 		}
 	}else if(type == _IN_LEAVE){
@@ -198,7 +198,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			if(n > NAMELEN)
 				return _IN_ERROR;
 			memcpy(_LEAVE.channel_name, argv[1], NAMELEN);
-			printf("Leave request:\nType: %d\nChannel: %s\n\n", _LEAVE.type_id, _LEAVE.channel_name);
+			//printf("Leave request:\nType: %d\nChannel: %s\n\n", _LEAVE.type_id, _LEAVE.channel_name);
 			return _LEAVE.type_id;
 		}else{
 			printf("Command Error: /leave was given an invalid number of arguments\n");
@@ -215,7 +215,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			if(n > TEXTLEN)
 				return _IN_ERROR;
 			memcpy(_SAY.text_field, argv[1], TEXTLEN);
-			printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", _SAY.type_id, _SAY.channel_name, _SAY.text_field);
+			//printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", _SAY.type_id, _SAY.channel_name, _SAY.text_field);
 			return _SAY.type_id;
 		}
 	}else if(type == _IN_LIST){
@@ -232,7 +232,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			if(n > NAMELEN)
 				return _IN_ERROR;
 			memcpy(_WHO.channel_name, argv[1], NAMELEN);
-			printf("Who request:\nType: %d\nChannel: %s\n\n", _WHO.type_id, _WHO.channel_name);
+			//printf("Who request:\nType: %d\nChannel: %s\n\n", _WHO.type_id, _WHO.channel_name);
 			return _WHO.type_id;
 		}
 	}else if(type == _IN_LIVE){
@@ -281,7 +281,7 @@ void resolve_cmd(char * input){
 			return;
 		}
 	}
-	printf("DEBUG: argc = %d\n", argc);
+	//printf("DEBUG: argc = %d\n", argc);
 
 	argv = malloc(sizeof(char *) * argc);
 	if(!argv)
@@ -569,7 +569,7 @@ void send_channel_request(uint32_t t){
 			return;
 		}
 	}
-	printf("[*] DEBUG: Active Channel Info:\n\tName: %s\n\tS_Addr: %u\n\tPort: %d\n\n", active_ch->name, active_ch->serveraddr.sin_addr.s_addr, active_ch->portno);
+	//printf("[*] DEBUG: Active Channel Info:\n\tName: %s\n\tS_Addr: %u\n\tPort: %d\n\n", active_ch->name, active_ch->serveraddr.sin_addr.s_addr, active_ch->portno);
 
 	memcpy(out_buf, _REQ_ARRAY[type_id], size);
 
@@ -609,22 +609,22 @@ void *recv_request(void *vargp){
 		if (n < 0){
 			puts("recvfrom failed in recv_request");
 		}else if(!memcmp(input, &_IN_SAY, 4)){
-			printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
-			printf("Message came from port: %d\n", ntohs(serveraddr.sin_port));
+			printf("[%s][%s]: %s\n", &input[4], &input[36], &input[68]);
+			//printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
+			//printf("Message came from port: %d\n", ntohs(serveraddr.sin_port));
 			//mutex lock
 			if(pending_channel_list){
-				printf("[*] DEBUG: checking pending_channel_list\n");
-				if(session->_active_channel->portno == session->_master->portno){
-				//if(serveraddr.sin_port != session->_active_channel->serveraddr.sin_port){
+				//printf("[*] DEBUG: checking pending_channel_list\n");
+				if(session->_active_channel->portno == session->_master->portno){	
 					memcpy(name, &input[4], NAMELEN);
-					printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel: %s\n", name);
-					printf("Serveraddr Info:\n\tin_addr: %u\n\tportno: %d\n\n", serveraddr.sin_addr.s_addr, serveraddr.sin_port);
+					//printf("[*] CLIENT-LOG: recv_request received Say request from non-active channel: %s\n", name);
+					//printf("Serveraddr Info:\n\tin_addr: %u\n\tportno: %d\n\n", serveraddr.sin_addr.s_addr, serveraddr.sin_port);
 					//Search pending join channels
 					ch = search_pending_channels(name);
 					if(ch){
 						ch->serveraddr.sin_port = serveraddr.sin_port;
 						ch->portno = ntohs(serveraddr.sin_port);
-						printf("[*] CLIENT-LOG: resolved pending channel's port number: %s\t%d\n", name, ch->portno);
+						//printf("[*] CLIENT-LOG: resolved pending channel's port number: %s\t%d\n", name, ch->portno);
 					}
 					//mutex unlock
 				}
@@ -632,7 +632,7 @@ void *recv_request(void *vargp){
 		}
 
 		if(!memcmp(input, &_IN_LOGOUT, 4)){
-			printf("Thread (%d) is returning\n", tid);
+			//printf("Thread (%d) is returning\n", tid);
 			break;
 		}
 	}
@@ -691,7 +691,7 @@ int init_server_connection(char *hostname, int portno) {
 	char buf[BUFSIZE];
 	char out_buf[BUFSIZE];
 	struct _MASTER_INFO *master;
-	char *argv[2] = {"join", "Commons"};
+	char *argv[2] = {"join", "Common"};
 
 	memset(buf, 0, BUFSIZE);
 	memset(out_buf, 0, BUFSIZE);
@@ -710,12 +710,7 @@ int init_server_connection(char *hostname, int portno) {
 	serverlen = sizeof(struct sockaddr_in);
 	build_request(_IN_LOGIN, 0, NULL);
 	send_master_request(_IN_LOGIN);
-	//char **argv;
-	//char ch_name[]="Commons";
-	//char cmd_name[]="join";
-	//argv[0] = (char *)&cmd_name;
-	//argv[1] = (char *)&ch_name;
-	//build_request(_IN_JOIN, 2, argv);
+
 	if(build_request(_IN_JOIN, 2, argv) != _IN_JOIN){
                         puts("ERROR: build_request failed");
                         return -1;
@@ -725,25 +720,6 @@ int init_server_connection(char *hostname, int portno) {
                         return -1;
         }
         send_master_request(_IN_JOIN);
-	/*n = recvfrom(master->sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&session->channels[session->num_channels]->serveraddr, &serverlen);
-	if (n < 0){
-		puts("ERROR: login failed");
-		return -1;
-	}
-	//master_portno = portno;
-	printf("Server requested to use port# %s\n", buf);
-	portno = atoi(buf);
-	session->channels[session->num_channels]->portno = portno;
-	session->channels[session->num_channels]->serveraddr.sin_port = htons(portno);
-
-	strncpy(session->channels[session->num_channels]->name, "Commons", strlen("Commons"));
-	session->_active_channel = session->channels[session->num_channels];
-	session->num_channels++;
-
-	printf("[*] CLIENT-LOG: active_channel info:\n\tname: %s\n\tport: %d\n\n", session->_active_channel->name, session->_active_channel->portno);
-	*/
-	//build_request(_IN_LOGIN, 0, NULL);
-	//send_request(_IN_LOGIN);
 
 	return 0;
 }
