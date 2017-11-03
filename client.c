@@ -13,15 +13,20 @@
 #define TEXTLEN 64
 #define REQSIZE 100 //sizeof(type_id) + sizeof(channel_name) + sizeof(text_field)
 
-const uint32_t _IN_LOGIN = 0;
-const uint32_t _IN_LOGOUT = 1;
-const uint32_t _IN_JOIN = 2;
-const uint32_t _IN_LEAVE = 3;
-const uint32_t _IN_SAY = 4;
-const uint32_t _IN_LIST = 5;
-const uint32_t _IN_WHO = 6;
-const uint32_t _IN_LIVE = 7;
-const uint32_t _IN_ERROR = 99;
+const uint32_t _OUT_LOGIN = 0;
+const uint32_t _OUT_LOGOUT = 1;
+const uint32_t _OUT_JOIN = 2;
+const uint32_t _OUT_LEAVE = 3;
+const uint32_t _OUT_SAY = 4;
+const uint32_t _OUT_LIST = 5;
+const uint32_t _OUT_WHO = 6;
+const uint32_t _OUT_LIVE = 7;
+const uint32_t _OUT_ERROR = 99;
+
+const uint32_t _IN_SAY = 0;
+const uint32_t _IN_LIST = 1;
+const uint32_t _IN_WHO = 2;
+const uint32_t _IN_ERROR = 3;
 
 const char _CMD_EXIT[]="exit";
 const char _CMD_JOIN[]="join";
@@ -165,7 +170,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 	uint32_t type = t;
 	size_t n;
 
-	if(type == _IN_LOGIN){
+	if(type == _OUT_LOGIN){
 		if(session->name){
 			memset(&_LOGIN, 0, sizeof(struct _REQ_LOGIN));
 			_LOGIN.type_id = type;
@@ -173,11 +178,11 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			//printf("Login request:\nType: %d\nName: %s\n", _LOGIN.type_id, _LOGIN.user_name);
 			return _LOGIN.type_id;
 		}
-	}else if(type == _IN_LOGOUT){
+	}else if(type == _OUT_LOGOUT){
 		_LOGOUT.type_id = type;
 		return _LOGOUT.type_id;
 
-	}else if(type == _IN_JOIN){
+	}else if(type == _OUT_JOIN){
 		//argv[0] is the command name: 'join'
 		if(argc == 2){
 			memset(&_JOIN, 0, sizeof(struct _REQ_JOIN));
@@ -189,7 +194,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			//printf("Join request:\nType: %d\nChannel: %s\n\n", _JOIN.type_id, _JOIN.channel_name);
 			return _JOIN.type_id;
 		}
-	}else if(type == _IN_LEAVE){
+	}else if(type == _OUT_LEAVE){
 		//command
 		if(argc == 2){
 			memset(&_LEAVE, 0, sizeof(struct _REQ_LEAVE));
@@ -203,7 +208,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 		}else{
 			printf("Command Error: /leave was given an invalid number of arguments\n");
 		}
-	}else if(type == _IN_SAY){
+	}else if(type == _OUT_SAY){
 		if(argc == 2){
 			memset(&_SAY, 0, sizeof(struct _REQ_SAY));
 			_SAY.type_id = type;
@@ -218,12 +223,12 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			//printf("Say request:\nType: %d\nChannel: %s\nText: %s\n", _SAY.type_id, _SAY.channel_name, _SAY.text_field);
 			return _SAY.type_id;
 		}
-	}else if(type == _IN_LIST){
+	}else if(type == _OUT_LIST){
 		memset(&_LIST, 0, sizeof(struct _REQ_LIST));
 		_LIST.type_id = type;
 		return _LIST.type_id;
 
-	}else if(type == _IN_WHO){
+	}else if(type == _OUT_WHO){
 		//command
 		if(argc == 2){
 			memset(&_WHO, 0, sizeof(struct _REQ_WHO));
@@ -235,7 +240,7 @@ uint32_t build_request(uint32_t t, int argc, char **argv){
 			//printf("Who request:\nType: %d\nChannel: %s\n\n", _WHO.type_id, _WHO.channel_name);
 			return _WHO.type_id;
 		}
-	}else if(type == _IN_LIVE){
+	}else if(type == _OUT_LIVE){
 		_LIVE.type_id = type;
 		return _LIVE.type_id;
 	}else{
@@ -305,42 +310,42 @@ void resolve_cmd(char * input){
 	}
 
 	if(memcmp(argv[0], _CMD_EXIT, strlen(_CMD_EXIT)) == 0){
-		if(build_request(_IN_LOGOUT, 0, NULL) != _IN_LOGOUT){
+		if(build_request(_OUT_LOGOUT, 0, NULL) != _OUT_LOGOUT){
 			puts("ERROR: build_request failed");
 			//free argv's and argv
 			return;
 		}
-		send_master_request(_IN_LOGOUT);
+		send_master_request(_OUT_LOGOUT);
 
 	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
-		if(build_request(_IN_JOIN, argc, argv) != _IN_JOIN){
+		if(build_request(_OUT_JOIN, argc, argv) != _OUT_JOIN){
 			puts("ERROR: build_request failed");
 			return;
 		}else if(!(join_channel(_JOIN.channel_name))){
 			return;
 		}
-		send_master_request(_IN_JOIN);
+		send_master_request(_OUT_JOIN);
 
 	}else if(memcmp(argv[0], _CMD_LEAVE, strlen(_CMD_LEAVE)) == 0){
-		if(build_request(_IN_LEAVE, argc, argv) != _IN_LEAVE){
+		if(build_request(_OUT_LEAVE, argc, argv) != _OUT_LEAVE){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_master_request(_IN_LEAVE);
+		send_master_request(_OUT_LEAVE);
 
 	}else if(memcmp(argv[0], _CMD_LIST, strlen(_CMD_LIST)) == 0){
-		if(build_request(_IN_LIST, 0, NULL) != _IN_LIST){
+		if(build_request(_OUT_LIST, 0, NULL) != _OUT_LIST){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_master_request(_IN_LIST);
+		send_master_request(_OUT_LIST);
 
 	}else if(memcmp(argv[0], _CMD_WHO, strlen(_CMD_WHO)) == 0){
-		if(build_request(_IN_WHO, argc, argv) != _IN_WHO){
+		if(build_request(_OUT_WHO, argc, argv) != _OUT_WHO){
 			puts("ERROR: build_request failed");
 			return;
 		}
-		send_channel_request(_IN_WHO);
+		send_master_request(_OUT_WHO);
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
@@ -629,9 +634,25 @@ void *recv_request(void *vargp){
 					//mutex unlock
 				}
 			}
+		}else if(!memcmp(input, &_IN_WHO, 4)){
+			uint32_t num_users;
+			memcpy(&num_users, &input[4], 4);
+			if(num_users > 0 && num_users < ((n+1)/32)){
+				int i;
+				int offset = 8;
+				printf("Users on channel %s:\n", &input[offset]);
+				for(i=0; i<num_users; i++){
+					offset+=32;
+					printf("%s\n", &input[offset]);
+					if(offset > BUFSIZE)
+						break;
+				}
+			}else{
+				printf("ERROR (2): Who response had invalid number of users field (%u)\n", num_users);
+			}
+			
 		}
-
-		if(!memcmp(input, &_IN_LOGOUT, 4)){
+		if(!memcmp(input, &_OUT_LOGOUT, 4)){
 			//printf("Thread (%d) is returning\n", tid);
 			break;
 		}
@@ -675,8 +696,8 @@ void user_prompt(){
 		}else if(input[0] == 0x2e){
 			break;
 		}else{	
-			build_request(_IN_SAY, 2, argv);
-			send_channel_request(_IN_SAY);
+			build_request(_OUT_SAY, 2, argv);
+			send_channel_request(_OUT_SAY);
 		}
 	}
 
@@ -708,10 +729,10 @@ int init_server_connection(char *hostname, int portno) {
 
 	/* Start server handshake */
 	serverlen = sizeof(struct sockaddr_in);
-	build_request(_IN_LOGIN, 0, NULL);
-	send_master_request(_IN_LOGIN);
+	build_request(_OUT_LOGIN, 0, NULL);
+	send_master_request(_OUT_LOGIN);
 
-	if(build_request(_IN_JOIN, 2, argv) != _IN_JOIN){
+	if(build_request(_OUT_JOIN, 2, argv) != _OUT_JOIN){
                         puts("ERROR: build_request failed");
                         return -1;
         }
@@ -719,7 +740,7 @@ int init_server_connection(char *hostname, int portno) {
 			puts("ERROR: join channel failed while initializing server connections");
                         return -1;
         }
-        send_master_request(_IN_JOIN);
+        send_master_request(_OUT_JOIN);
 
 	return 0;
 }

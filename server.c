@@ -33,6 +33,11 @@ const uint32_t _IN_WHO = 6;
 const uint32_t _IN_LIVE = 7;
 const uint32_t _IN_ERROR = 99;
 
+const uint32_t _OUT_SAY = 0;
+const uint32_t _OUT_LIST = 1;
+const uint32_t _OUT_WHO = 2;
+const uint32_t _OUT_ERROR = 3;
+
 struct __attribute__((__packed__)) _REQ_LOGIN{
 	uint32_t type_id;
 	char user_name[NAMELEN];
@@ -65,7 +70,9 @@ struct __attribute__((__packed__)) _REQ_LIST{
 
 struct __attribute__((__packed__)) _REQ_WHO{
 	uint32_t type_id;
+	uint32_t num_users;
 	char channel_name[NAMELEN];
+	char *users;
 };
 
 struct __attribute__((__packed__)) _REQ_LIVE{
@@ -250,7 +257,7 @@ int add_channel_user(struct user *client, struct channel *ch){
 		memset(client->ch_list, 0, sizeof(struct channel_list));
 		client->ch_list->ch = ch;
 		client->ch_list->ch_prev = NULL;
-		client->ch_list->ch_next = NULL;
+		client->ch_list->ch_next = NULL;		
 		return 0;
 	}
 
@@ -504,6 +511,46 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 	return client;
 }
 
+char *users_in_channel(struct channel *ch, struct _REQ_WHO *_who){
+	struct user *usr;
+	struct AUTHD_CLIENT *authd_c;
+	struct channel_list *ch_list;
+	uint32_t n=0;
+	uint32_t offset=0;
+	char * buf = malloc(512);
+	memset(buf, 0, 512);
+
+	/*THis is Terrible*/
+	authd_c = client_list;
+	if(!client_list)
+		return NULL;
+	
+	while(authd_c){
+		if(!authd_c->user_s){
+			authd_c = authd_c->next;
+			continue;
+		}
+		ch_list = authd_c->user_s->ch_list;
+		usr = authd_c->user_s;
+		while(ch_list){
+			if(!ch_list->ch){
+				ch_list = ch_list->ch_next;
+				continue;
+			}
+			if(!memcmp(ch_list->ch->name, ch->name, NAMELEN)){
+				memcpy(&buf[offset], authd_c->user_s->uname, NAMELEN);
+				offset+=32;
+				n++;
+			}
+			ch_list = ch_list->ch_next;
+		}
+		authd_c = authd_c->next;
+	}
+	//printf("Users in channel (%u): %s\n", offset, buf);
+	_who->num_users = n;
+	return buf;
+}
+
 int leave_channel(struct SHMEM_USR_ACTION *req){
 	struct user * old_user;
 	char *hostaddrp;
@@ -651,7 +698,7 @@ void queue_say_request(struct _REQ_NEW * req, int idx){
 	}
 
 	memset(_SAY, 0, sizeof(struct _REQ_SAY));
-	_SAY->type_id = _IN_SAY;
+	_SAY->type_id = _OUT_SAY;
 	memcpy(_SAY->channel_name, this_channel->name, NAMELEN);
 	memcpy(_SAY->user_name, this_channel->users[index]->uname, NAMELEN);
 	memcpy(_SAY->text_field, &req->data[sizeof(uint32_t)+NAMELEN], TEXTLEN);
@@ -682,12 +729,14 @@ struct channel * channel_lookup(char * ch_name){
 
 uint32_t handle_request(struct _REQ_NEW * req){
 	/**/
+	char out_buf[BUFSIZE+4];
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
 	struct AUTHD_CLIENT *client;
 	int n;
 	
 	memset(msg, 0, MSGSIZE+4);
+	memset(msg, 0, BUFSIZE+4);
 	memcpy(&type_id, req->data, 4);
 
 	if(type_id > 7 || type_id < 0){
@@ -802,6 +851,24 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_WHO){
                 server_log("Type: Who");
+		memcpy(msg, &req->data[4], NAMELEN);
+		struct channel *ch = channel_lookup(msg);
+		struct _REQ_WHO *_who = malloc(sizeof(struct _REQ_WHO));
+		if(!_who)
+			exit(1);
+		memset(_who, 0, sizeof(struct _REQ_WHO));
+		if(ch != NULL){
+			_who->type_id = _OUT_WHO;
+			memcpy(_who->channel_name, ch->name, NAMELEN);
+			_who->users = users_in_channel(ch, _who);	
+			int req_offset = (sizeof(struct _REQ_WHO)-sizeof(char *));
+			memcpy(out_buf, _who, req_offset);
+			memcpy(&out_buf[req_offset], _who->users, (32*_who->num_users));
+			
+			n = sendto(tmp_sockfd, out_buf, (req_offset+(32*_who->num_users)), 0, (struct sockaddr *)&req->clientaddr, sizeof(struct sockaddr_in));
+			if(n < 0)
+				return(_IN_ERROR + _IN_WHO);
+		}
 		return _IN_WHO;
 
 	}else if(type_id == _IN_LIVE){
