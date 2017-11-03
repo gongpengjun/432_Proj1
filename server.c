@@ -425,6 +425,7 @@ int client_logout(struct AUTHD_CLIENT *client){
 	struct channel_list *ch_list;
 
 	int n;
+	printf("Logging out client: %s\n", client->user_s->uname);
 	if(client){
 		if(client->prev && client->next){
 			puts("Client has next and prev");
@@ -436,6 +437,14 @@ int client_logout(struct AUTHD_CLIENT *client){
 		}else if(client->prev){
 			puts("Client has prev");
 			client->prev->next = NULL;
+		}
+
+		struct AUTHD_CLIENT *list;
+		printf("Client List is Now:\n");
+		list = client_list;
+		while(list){
+			printf("Name: %s\tnext: %p\t prev: %p\n", client_list->user_s->uname, client_list->next, client_list->prev);
+			list = list->next;
 		}
 
 		/*n = sendto(tmp_sockfd, &_IN_LOGOUT, sizeof(uint32_t), 0, (struct sockaddr *)&client->user_s->clientaddr, sizeof(struct sockaddr));
@@ -454,16 +463,17 @@ int client_logout(struct AUTHD_CLIENT *client){
 		while(ch_list){
 			printf("[*] client_logout: channel addr -> %p\t user addr -> %p\n", ch_list->ch, usr);
 			if(ch_list->ch != NULL){
-				//snprintf(logging_msg, 128, "removing user (%s) from channel (%s).", usr->uname, ch_list->ch->name);
-				//server_log(logging_msg);
+				snprintf(logging_msg, 128, "removing user (%s) from channel (%s).", usr->uname, ch_list->ch->name);
+				server_log(logging_msg);
 				remove_channel_user(usr, ch_list->ch);
 			}
 			ch_list = ch_list->ch_next;
 		}
 
 		free(client->user_s);
+		client->user_s = NULL;
 		free(client);
-		client_list = NULL;
+		//client_list = NULL;
 		return 0;
 	}
 	return -1;
