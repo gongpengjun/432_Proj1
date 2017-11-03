@@ -123,6 +123,7 @@ struct AUTHD_CLIENT{
 struct __attribute__((__packed__)) SHMEM_USR_ACTION{
 	uint32_t type_id;
 	char user_name[NAMELEN];
+	char text_field[TEXTLEN];
 	struct sockaddr_in clientaddr;
 }shmem_user;
 
@@ -363,14 +364,14 @@ struct AUTHD_CLIENT *client_lookup(char *addr, char *uname){
 	*/
 }
 
-int user_lookup(char *addr, char *uname, struct channel *ch){
+int user_lookup(char *addr, char *uname){
 	/*
 	* Returns index of user struct * if addr is found
 	* returns -1 if user is not found
 	*/
 	int i;
 	size_t n;
-	//struct channel *ch = this_channel;
+	struct channel *ch = this_channel;
 	
 	if(ch->num_users < 1)
 		return -1;
@@ -546,7 +547,7 @@ int leave_channel(struct SHMEM_USR_ACTION *req){
 	hostaddrp = resolve_client(&req->clientaddr);
 
 	pthread_mutex_lock(&lock2);
-	index = user_lookup(hostaddrp, uname, ch);
+	index = user_lookup(hostaddrp, uname);
 	if(index == -1){	
 		server_log("User has not joined or has already left this channel");
 		free(hostaddrp);
@@ -587,7 +588,7 @@ void join_channel(struct SHMEM_USR_ACTION *req){
 	memcpy(&new_user->clientaddr, &req->clientaddr, sizeof(struct sockaddr));
 	new_user->hostaddrp = resolve_client(&new_user->clientaddr);
 	memcpy(new_user->uname, req->user_name, NAMELEN);
-	if((user_lookup(new_user->hostaddrp, new_user->uname, ch)) != -1){
+	if((user_lookup(new_user->hostaddrp, new_user->uname)) != -1){
 		server_log("User has already joined this channel");
 		free(new_user->hostaddrp);
 		free(new_user);
@@ -819,6 +820,14 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		memcpy(msg, &req->data[4], NAMELEN);
 		struct channel *ch = channel_lookup(msg);
 		if(ch != NULL){
+			memset(&shmem_user, 0, sizeof(struct SHMEM_USR_ACTION));
+			shmem_user.type_id = _IN_SAY;
+			memcpy(&shmem_user.user_name, msg, NAMELEN);
+			memcpy(&shmem_user.text_field, &req->data[NAMELEN+4], TEXTLEN);
+			memcpy(&shmem_user.clientaddr, &req->clientaddr, sizeof(struct sockaddr_in));
+			puts("Say request enqueued for child");
+			shmem_enqueue(ch);
+			/*
 			if(ch->sockfd > 0 && &ch->serveraddr != NULL){
 				n = sendto(ch->sockfd, req->data, MSGSIZE, 0, (struct sockaddr *)&ch->serveraddr, sizeof(struct sockaddr_in));
 				if(n < 0){
@@ -827,6 +836,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 					server_log("Successfully forwarded Say message to channel.");
 				}
 			}
+			*/
 		}else{
 			return(_IN_ERROR + _IN_SAY);
 		}
@@ -885,8 +895,9 @@ void destroy_channel(){
 void *shmem_dequeue(void *argvp){
 	unsigned int offset=0;
 	unsigned int size=0;
-	int i;
+	int i, n;
 	struct channel *ch = this_channel;
+	struct _REQ_NEW msg;
 	char req_buf[(SHMEM_USER_SIZE*SHMEM_STCK_SIZE)+8];
 	
 	while(1){
@@ -904,9 +915,21 @@ void *shmem_dequeue(void *argvp){
 		for(i=0; i<size; i++){
 			memset(&shmem_user, 0, SHMEM_USER_SIZE);
 			memcpy(&shmem_user, req_buf+offset, SHMEM_USER_SIZE);
-			snprintf(logging_msg, 128, "shmem_user: type_id: %u\t user_name: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, offset);
+			snprintf(logging_msg, 128, "shmem_user: type_id: %u\t name: %s\t msg: %s\t@ offset: %u\n",shmem_user.type_id, shmem_user.user_name, shmem_user.text_field, offset);
 			server_log(logging_msg);
-			if(shmem_user.type_id == _IN_JOIN){
+			if(shmem_user.type_id == _IN_SAY){
+				memset(&msg, 0, sizeof(struct _REQ_NEW));
+				msg.size = MSGSIZE;
+				msg.hostaddrp = resolve_client(&shmem_user.clientaddr);
+				printf("resolve_client returned: %s\n", msg.hostaddrp);
+				memcpy(msg.data, &shmem_user, MSGSIZE);
+				memcpy(&msg.clientaddr, &shmem_user.clientaddr, sizeof(struct sockaddr_in));
+				n = user_lookup(msg.hostaddrp, NULL);
+				printf("==== n returned: %d\t enqueueing msg.data: %s\n", n, msg.data);
+				if(n > -1)
+					queue_say_request(&msg, n);
+
+			}else if(shmem_user.type_id == _IN_JOIN){
 				join_channel(&shmem_user);
 			}else if(shmem_user.type_id == _IN_LEAVE){
 				if((leave_channel(&shmem_user)) == 1){
@@ -941,7 +964,7 @@ void *thread_accept(void *argvp){
 				server_log("Say request sent to wrong channel");
 				continue;
 			}else{
-				n = user_lookup(msg->hostaddrp, NULL, this_channel);
+				n = user_lookup(msg->hostaddrp, NULL);
 				if(n < 0){
 					server_log("received Say request from non-authenticated user");
 					continue;
