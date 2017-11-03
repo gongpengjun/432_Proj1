@@ -925,7 +925,7 @@ void *shmem_dequeue(void *argvp){
 				memcpy(msg.data, &shmem_user, MSGSIZE);
 				memcpy(&msg.clientaddr, &shmem_user.clientaddr, sizeof(struct sockaddr_in));
 				n = user_lookup(msg.hostaddrp, NULL);
-				printf("==== n returned: %d\t enqueueing msg.data: %s\n", n, msg.data);
+				printf("==== n returned: %d\t enqueueing msg.data: %s\n", n, &msg.data[4+NAMELEN]);
 				if(n > -1)
 					queue_say_request(&msg, n);
 
