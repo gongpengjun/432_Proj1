@@ -212,6 +212,7 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 	int n;
 	char *hostaddrp;
 	char *hostaddrp_copy;
+	char hostname[1024];
 	/*
 	*Copy result of inet_ntoa() or it will be lost. From man pages:
 	*The string is returned in a statically allocated buffer, which subsequent calls will overwrite.
@@ -230,6 +231,8 @@ char * resolve_client(struct sockaddr_in *clientaddr){
 		debug("resolve_client found un-equal hostaddr strlen's");
 		return NULL;
 	}
+	gethostname(hostname, 1023);
+	printf("[*] Got hostname: %s\n", hostname);
 
 	return hostaddrp_copy;
 }
@@ -525,7 +528,8 @@ struct AUTHD_CLIENT * client_login(struct _REQ_NEW *req, char *uname){
 
 	//set new tail authd client struct's user struct to the new user's struct
 	client->user_s = new_user;
-	server_log("client_login added client");
+	printf("[*] Server has logged in User: %s (hostaddr: %s)\n", client->user_s->uname, client->user_s->hostaddrp);
+	//server_log("client_login added client");
 	return client;
 }
 
@@ -593,7 +597,7 @@ void join_channel(struct SHMEM_USR_ACTION *req){
 	ch->users[ch->num_users] = new_user;
 	ch->num_users++;
 	pthread_mutex_unlock(&lock2);
-	snprintf(logging_msg, 128, "User: %s has joined the channel.", new_user->uname);
+	snprintf(logging_msg, 128, "User: %s (%s) has joined the channel.", new_user->uname, new_user->hostaddrp);
 	server_log(logging_msg);
 
 	return;
