@@ -1,15 +1,15 @@
 CC=gcc
 
-all: server.c client.c
-	gcc -o server server.c -lpthread
-	gcc -o client client.c -lpthread
+# CFLAGS=-Wall -W -g -Werror -pthread
+CFLAGS=-g -pthread
 
-server: server.c
-	gcc -o server server.c -lpthread
+all: server client
 
-client: client.c
-	gcc -o client client.c -lpthread
+client: client.c raw.c
+	$(CC) client.c raw.c $(CFLAGS) -o client
+
+server: server.c 
+	$(CC) server.c $(CFLAGS) -o server
 
 clean:
-	rm server
-	rm client
+	rm -f server client *.o

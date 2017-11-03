@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <pthread.h>
+#include "raw.h"
 
 #define BUFSIZE 512
 #define NAMELEN 32
@@ -117,6 +118,8 @@ int DEFAULT_PORT = 4444;
 
 //int sockfd, portno, master_sockfd, master_portno;
 int serverlen;
+char *input_bp;
+unsigned int input_size;
 //struct sockaddr_in serveraddr;
 //struct sockaddr_in master_serveraddr;
 //struct hostent *server;
@@ -126,6 +129,7 @@ struct _PENDING_CHANNEL *pending_channel_list;
 //char *hostname;
 
 pthread_t tid;
+pthread_mutex_t lock1 = PTHREAD_MUTEX_INITIALIZER;
 
 void error(char *msg) {
 	perror(msg);
@@ -316,6 +320,7 @@ void resolve_cmd(char * input){
 			return;
 		}
 		send_master_request(_OUT_LOGOUT);
+		exit(0);
 
 	}else if(memcmp(argv[0], _CMD_JOIN, strlen(_CMD_JOIN)) == 0){
 		if(build_request(_OUT_JOIN, argc, argv) != _OUT_JOIN){
@@ -349,7 +354,6 @@ void resolve_cmd(char * input){
 
 	}else if(memcmp(argv[0], _CMD_SWITCH, strlen(_CMD_SWITCH)) == 0){
 		/*No request needed, client keeps track of this*/
-		//printf("Sure sure, switching to channel: %s\n", argv[1]);
 		switch_channel(argv[1]);
 
 	}else{
@@ -399,7 +403,6 @@ void switch_channel(char *name){
 struct _PENDING_CHANNEL *new_pending_channel(){
 	struct _PENDING_CHANNEL *pend_ch;
 
-	//mutex lock
 	if(!pending_channel_list){
 		pending_channel_list = malloc(sizeof(struct _PENDING_CHANNEL));
 		if(!pending_channel_list){
@@ -511,7 +514,7 @@ struct channel *join_channel(char *name){
 	session->channels[session->num_channels] = new_ch;
 	session->num_channels++;
 	session->_active_channel = new_ch;
-	printf("[*] DEBUG: Joining channel: %s\n", new_ch->name);
+	//printf("[*] DEBUG: Joining channel: %s\n", new_ch->name);
 	//Add channel to pending channels
 	pend_ch->ch = new_ch;
 
@@ -614,11 +617,13 @@ void *recv_request(void *vargp){
 		n = recvfrom(sockfd, input, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
 		if (n < 0){
 			puts("recvfrom failed in recv_request");
-		}else if(!memcmp(input, &_IN_SAY, 4)){
+		}else if(!memcmp(input, &_IN_SAY, 4)){	
+			for(i=0; i <= input_size; i++){
+				write(1, "\b", 1);
+			}
 			printf("[%s][%s]: %s\n", &input[4], &input[36], &input[68]);
 			//printf("Received message: \n\t\ttype_id:\t0x%08x \n\t\tchannel:\t%s \n\t\tuser:\t\t%s \n\t\tmessage:\t%s\n", input, &input[4], &input[36], &input[68]);
-			//printf("Message came from port: %d\n", ntohs(serveraddr.sin_port));
-			//mutex lock
+			//printf("Message came from port: %d\n", ntohs(serveraddr.sin_port));	
 			if(pending_channel_list){
 				//printf("[*] DEBUG: checking pending_channel_list\n");
 				if(session->_active_channel->portno == session->_master->portno){	
@@ -630,10 +635,12 @@ void *recv_request(void *vargp){
 					if(ch){
 						ch->serveraddr.sin_port = serveraddr.sin_port;
 						ch->portno = ntohs(serveraddr.sin_port);
-						//printf("[*] CLIENT-LOG: resolved pending channel's port number: %s\t%d\n", name, ch->portno);
-					}
-					//mutex unlock
+					}	
 				}
+			}
+			write(1, "> ", 2);
+			for(i=0; i<input_size; i++){
+				write(1, &input_bp[i], 1);
 			}
 		}else if(!memcmp(input, &_IN_WHO, 4)){
 			uint32_t num_users;
@@ -665,50 +672,58 @@ void *recv_request(void *vargp){
 			}else{
 				printf("ERROR (1): List response had invalid number of channels field (%u)\n", num_chs);
 			}
+		}else if(!memcmp(input, &_IN_ERROR, 4)){
+			printf("Server Error:\n %s\n", &input[4]);
 		}
-		//if(!memcmp(input, &_OUT_LOGOUT, 4)){
-			//printf("Thread (%d) is returning\n", tid);
+		//if(!memcmp(input, &_OUT_LOGOUT, 4)){	
 		//	break;
 		//}
 	}
 	pthread_exit(NULL);
-	//return;
+
 }
 
 void user_prompt(){
-	char *input;
+	//char *input;
+	char *input2;
 	char **argv;
 	int n;
 
-	input = (char *)malloc(BUFSIZE);
-	if(!input)
+	input_bp = (char *)malloc(BUFSIZE);
+	if(!input_bp)
 		error("ERROR: malloc returned null in user_prompt()");
+	input2 = (char *)malloc(BUFSIZE);
+	if(!input2)
+		error("ERROR: malloc");
+	memset(input2, 0, BUFSIZE);
 	argv = malloc((sizeof(char *))*2);
 	if(!argv)
 		error("ERROR: malloc returned null in user_prompt()");
 	//argv[0] = session->_active_channel->name;
-	argv[1] = input;
+	argv[1] = input_bp;
 
+	//raw_mode();
 	while(1){
-		memset(input, 0, BUFSIZE);
+		input_size = 0;
+		memset(input_bp, 0, BUFSIZE);
 		write(1, "> ", 2);
 
 		n=0;
 		argv[0] = session->_active_channel->name;
-		while(n < BUFSIZE){
-			if((read(0, &input[n], 1)) < 1)
+		while(n < BUFSIZE){	
+			if((read(0, &input_bp[n], 1)) < 1)
 				break;
-			if(input[n] == 0x0a || input[n] == 0x00){
-				input[n] = 0x00;
+			if(input_bp[n] == 0x0a || input_bp[n] == 0x00){
+				//input[n] = 0x00;
 				break;
 			}	
 			n++;
+			input_size++;	
 		}
+		memcpy(input2, input_bp, BUFSIZE);
 
-		if(input[0] == 0x2f){
-			resolve_cmd(input);
-		}else if(input[0] == 0x2e){
-			break;
+		if(input2[0] == 0x2f){
+			resolve_cmd(input2);
 		}else{	
 			build_request(_OUT_SAY, 2, argv);
 			send_channel_request(_OUT_SAY);
@@ -716,7 +731,7 @@ void user_prompt(){
 	}
 
 	free(argv);
-	free(input);
+	free(input2);
 
 	return;
 }
