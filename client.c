@@ -590,7 +590,8 @@ void *recv_request(void *vargp){
 	char name[NAMELEN+4];
 	struct sockaddr_in serveraddr;
 	struct channel *ch;
-	int n, serverlen, sockfd;
+	int n, serverlen, sockfd, i;
+	int offset = 8;
 
 	serverlen = sizeof(serveraddr);
 	memset(&serveraddr, 0, serverlen);
@@ -609,7 +610,7 @@ void *recv_request(void *vargp){
 	}
 
 	while(1){
-		memset(input, 0, BUFSIZE);
+		memset(input, 0, BUFSIZE);	
 		n = recvfrom(sockfd, input, BUFSIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
 		if (n < 0){
 			puts("recvfrom failed in recv_request");
@@ -637,25 +638,38 @@ void *recv_request(void *vargp){
 		}else if(!memcmp(input, &_IN_WHO, 4)){
 			uint32_t num_users;
 			memcpy(&num_users, &input[4], 4);
-			if(num_users > 0 && num_users < ((n+1)/32)){
-				int i;
-				int offset = 8;
+			if(num_users > 0 && (num_users*32) < n){	
 				printf("Users on channel %s:\n", &input[offset]);
 				for(i=0; i<num_users; i++){
 					offset+=32;
 					printf("%s\n", &input[offset]);
 					if(offset > BUFSIZE)
-						break;
+						;
 				}
 			}else{
 				printf("ERROR (2): Who response had invalid number of users field (%u)\n", num_users);
 			}
 			
+		}else if(!memcmp(input, &_IN_LIST, 4)){
+			uint32_t num_chs;
+			memcpy(&num_chs, &input[4], 4);
+			if(num_chs > 0 && (num_chs*32) < n){
+				offset = 8;
+				printf("Existing channels:\n");
+				for(i=0; i<num_chs; i++){
+					printf("%s\n", &input[offset]);
+					offset+=32;
+					if(offset > BUFSIZE)
+						i+=num_chs;
+				}	
+			}else{
+				printf("ERROR (1): List response had invalid number of channels field (%u)\n", num_chs);
+			}
 		}
-		if(!memcmp(input, &_OUT_LOGOUT, 4)){
+		//if(!memcmp(input, &_OUT_LOGOUT, 4)){
 			//printf("Thread (%d) is returning\n", tid);
-			break;
-		}
+		//	break;
+		//}
 	}
 	pthread_exit(NULL);
 	//return;

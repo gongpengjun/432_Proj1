@@ -169,6 +169,7 @@ unsigned int SHMEM_STCK_SIZE;
 
 pid_t pid;
 char logging_msg[128];
+char master_error_msg[68];
 
 void shmem_enqueue(struct channel *ch);
 struct channel *create_channel(char *name, int p);
@@ -180,6 +181,11 @@ void error(char *msg){
 	exit(1);
 }
 
+void client_error(char *msg){
+	memset(master_error_msg, 0, 68);
+	memcpy(master_error_msg, msg, strlen(msg));
+	return;
+}
 void debug(char *msg){
 	printf("[*] DEBUG (%d):\t\t%s\n", pid, msg);
 	memset(logging_msg, 0, 128);
@@ -733,7 +739,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 	char msg[MSGSIZE+4]; //4 extra bytes are used for null-byte padding and 64bit alignment
 	uint32_t type_id = 0;
 	struct AUTHD_CLIENT *client;
-	int n;
+	int n, offset;
 	
 	memset(msg, 0, MSGSIZE+4);
 	memset(msg, 0, BUFSIZE+4);
@@ -761,6 +767,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		server_log("Client requested to login to channel");
 		if(req->size != (sizeof(uint32_t)+NAMELEN)){
 			server_log("Login request has invalid size");
+			client_error("LOGIN ERROR: invalid size\n");
 			return(_IN_ERROR + _IN_LOGIN);
 		}
 
@@ -787,6 +794,7 @@ uint32_t handle_request(struct _REQ_NEW * req){
 		*/
 		if(req->size != sizeof(uint32_t)){
 			server_log("Logout request has invalid size");
+			client_error("LOGOUT ERROR: invalid size\n");
 			return(_IN_ERROR + _IN_LOGOUT);
 		}
 		struct AUTHD_CLIENT *client;
@@ -804,12 +812,15 @@ uint32_t handle_request(struct _REQ_NEW * req){
                 server_log("Type: Join");
 		if(req->size != (sizeof(uint32_t)+NAMELEN)){
 			server_log("Join request has invalid size");
+			client_error("JOIN ERROR: invalid size\n");
 			return(_IN_ERROR + _IN_JOIN);
 		}
 		//FIX: hardcoded sizeof(uint32_t) and [4] sizes. replace with #define TYPELEN
 		memcpy(msg, &req->data[4], NAMELEN);
-		if(handle_join_request(tmp_sockfd, channel_lookup(msg), client->user_s, msg))
+		if(handle_join_request(tmp_sockfd, channel_lookup(msg), client->user_s, msg)){
+			client_error("JOIN ERROR: join failed\n");
 			return(_IN_ERROR + _IN_JOIN);
+		}
 
 		return _IN_JOIN;
 
@@ -847,6 +858,19 @@ uint32_t handle_request(struct _REQ_NEW * req){
 
 	}else if(type_id == _IN_LIST){
                 server_log("Type: List");
+		offset = 8;
+		uint32_t i;
+		for(i=0; i<ch_mgr->size; i++){
+			memcpy(&out_buf[offset], ch_mgr->channels[i]->name, NAMELEN);
+			offset+=32;
+			if(offset > BUFSIZE)
+				break;
+		}
+		memcpy(out_buf, &_OUT_LIST, 4);
+		memcpy(&out_buf[4], &i, 4);
+		n = sendto(tmp_sockfd, out_buf, (8+(i*32)), 0, (struct sockaddr *)&req->clientaddr, sizeof(struct sockaddr_in));
+		if(n < 0)
+			return(_IN_ERROR + _IN_LIST);
 		return _IN_LIST;
 
 	}else if(type_id == _IN_WHO){
@@ -1260,12 +1284,14 @@ int main(int argc, char** argv) {
         //struct _REQ_LOGIN * _LOGIN = malloc(req_size);
 	tmp_sockfd = sockfd;
 
-
-
-	
+	uint32_t type;
 	while(1){
 		msg = accept_input_blk(sockfd);
+		memcpy(&type, msg->data, 4);
 		msg_type = handle_request(msg);
+		if((msg_type - type) == _IN_ERROR){
+			n = sendto(sockfd, master_error_msg, 68, 0, (struct sockaddr *)&msg->clientaddr, sizeof(struct sockaddr_in));
+		}
 		free(msg);
 	}
 
